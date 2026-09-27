@@ -1,4 +1,8 @@
-# Codex Orchestration Skills / Codex 编排技能集
+# Codex Three Paths / Codex 三路径技能集
+
+Native agents · External providers · Harness delegation
+
+原生 agent · 外部 provider · 独立 harness
 
 [中文](#中文) · [English](#english)
 
@@ -19,7 +23,7 @@
 在 Codex 中使用内置 `$skill-installer`，请它从本仓库一次安装下面三个路径：
 
 ```text
-仓库：AshWood97/codex-orchestration-skills
+仓库：AshWood97/codex-three-paths
 路径：.agents/skills/codex-native-orchestrator
       .agents/skills/codex-external-provider
       .agents/skills/codex-harness-bridge
@@ -59,7 +63,7 @@ The skills can participate in one workflow, but they do not automatically mix mo
 In Codex, ask the built-in `$skill-installer` to install these three paths from this repository:
 
 ```text
-Repository: AshWood97/codex-orchestration-skills
+Repository: AshWood97/codex-three-paths
 Paths: .agents/skills/codex-native-orchestrator
        .agents/skills/codex-external-provider
        .agents/skills/codex-harness-bridge
