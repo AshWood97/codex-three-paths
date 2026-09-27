@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Harness Bridge"
+  short_description: "Delegate bounded jobs to configured coding harnesses"
+  default_prompt: "Use $codex-harness-bridge to delegate one bounded role task and independently verify its result."

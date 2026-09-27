@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-native-orchestrator/gate.schema.json",
+  "type": "object",
+  "required": ["Verdict", "Important findings", "Required changes", "Residual risks"],
+  "properties": {
+    "Verdict": {"type": "string", "enum": ["approve", "revise", "block"]},
+    "Important findings": {"type": "array", "items": {"type": "string"}},
+    "Required changes": {"type": "array", "items": {"type": "string"}},
+    "Residual risks": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

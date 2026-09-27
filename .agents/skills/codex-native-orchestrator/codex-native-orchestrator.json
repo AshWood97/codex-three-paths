@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "package_version": "2.5.0",
+  "package_id": "codex-native-orchestrator",
+  "skill": {
+    "entry": ".agents/skills/codex-native-orchestrator/SKILL.md",
+    "references": [
+      ".agents/skills/codex-native-orchestrator/references/routing.md",
+      ".agents/skills/codex-native-orchestrator/references/delegation-contract.md",
+      ".agents/skills/codex-native-orchestrator/references/guardian-gate.md",
+      ".agents/skills/codex-native-orchestrator/references/runner-and-recovery.md",
+      ".agents/skills/codex-native-orchestrator/references/evidence-and-review.md"
+    ]
+  },
+  "roles": {
+    "root": { "model": "gpt-6-astra", "reasoning_effort": "low", "sandbox_mode": "workspace-write" },
+    "explorer": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "read-only" },
+    "worker": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "workspace-write" },
+    "tester": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "workspace-write" },
+    "reviewer": { "model": "gpt-6-sol", "reasoning_effort": "medium", "sandbox_mode": "read-only" },
+    "researcher": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "read-only" },
+    "guardian": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only", "automatic": false, "requires_explicit_request": true }
+  },
+  "max_concurrency": 4,
+  "runner_defaults": {
+    "mode": "hybrid",
+    "decision": "auto",
+    "max_agents": 4,
+    "triggers": [
+      "explicit_dag_batch_resume_persistence_request",
+      "three_or_more_dependent_nodes",
+      "two_or_more_parallel_writers",
+      "cross_turn_recovery"
+    ],
+    "multi_file_is_trigger": false,
+    "overrides": ["runner on", "runner off", "root-only", "max agents N", "read-only"]
+  },
+  "paths": {
+    "project_config": ".codex/config.toml",
+    "compatibility_config": ".codex/config.plus.toml",
+    "agents_dir": ".codex/agents",
+    "skill_dir": ".agents/skills/codex-native-orchestrator",
+    "skill_entry": ".agents/skills/codex-native-orchestrator/SKILL.md",
+    "manifest": ".agents/skills/codex-native-orchestrator/codex-native-orchestrator.json",
+    "references_dir": ".agents/skills/codex-native-orchestrator/references",
+    "run_state_root": "CODEX_HOME/astra-orchestrator/runs",
+    "user_config": "CODEX_HOME/config.toml",
+    "user_agents_dir": "CODEX_HOME/agents",
+    "user_skill_dir": "~/.agents/skills/codex-native-orchestrator"
+  },
+  "timeouts": { "read_only": 1800, "writer": 3600, "guardian": 900 },
+  "managed_config_keys": [
+    "agents.enabled",
+    "agents.max_concurrent_threads_per_session",
+    "agents.default_subagent_model",
+    "agents.default_subagent_reasoning_effort"
+  ],
+  "config_values": {
+    "agents.enabled": true,
+    "agents.max_concurrent_threads_per_session": 4,
+    "agents.default_subagent_model": "gpt-6-luna",
+    "agents.default_subagent_reasoning_effort": "high"
+  },
+  "installation_scope": "global",
+  "deployment": {
+    "config_path": "config.toml",
+    "agents_home": "agents",
+    "skill_home": "~/.agents/skills/codex-native-orchestrator",
+    "agents_source": ".agents/skills/codex-native-orchestrator/roles",
+    "skill_source": ".agents/skills/codex-native-orchestrator"
+  }
+}

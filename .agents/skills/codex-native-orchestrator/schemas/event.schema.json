@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-native-orchestrator/event.schema.json",
+  "type": "object",
+  "required": ["schema_version", "event_id", "run_id", "sequence", "timestamp", "type", "payload", "prev_hash", "event_hash"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "timestamp": {"type": "string"},
+    "type": {"type": "string"},
+    "payload": {"type": "object"},
+    "prev_hash": {"type": "string"},
+    "event_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

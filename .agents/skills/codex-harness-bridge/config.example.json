@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "binaries": {
+    "codex-cli": "codex",
+    "claude-code": "claude",
+    "grok-build": "grok",
+    "opencode": "opencode",
+    "pi": "pi",
+    "deepseek-harness": "dsh"
+  },
+  "model_ids": {
+    "codex-cli": {},
+    "claude-code": {},
+    "grok-build": {},
+    "opencode": {
+      "grok-4.7": "your-provider/grok-4.7",
+      "step-5-preview": "your-provider/step-5-preview",
+      "gemini-3.8-flash-high": "your-provider/gemini-3.8-flash-high"
+    },
+    "pi": {
+      "grok-4.7": "your-provider/grok-4.7",
+      "step-5-preview": "your-provider/step-5-preview",
+      "gemini-3.8-flash-high": "your-provider/gemini-3.8-flash-high"
+    }
+  },
+  "env_map": {
+    "claude-code": {
+      "ANTHROPIC_BASE_URL": "MY_ANTHROPIC_COMPAT_BASE_URL",
+      "ANTHROPIC_API_KEY": "MY_ANTHROPIC_COMPAT_API_KEY"
+    },
+    "grok-build": {
+      "XAI_API_KEY": "MY_XAI_API_KEY"
+    },
+    "opencode": {
+      "XAI_API_KEY": "MY_XAI_API_KEY",
+      "STEP_API_KEY": "MY_STEP_API_KEY",
+      "GEMINI_API_KEY": "MY_GEMINI_API_KEY"
+    },
+    "pi": {
+      "XAI_API_KEY": "MY_XAI_API_KEY",
+      "STEP_API_KEY": "MY_STEP_API_KEY",
+      "GEMINI_API_KEY": "MY_GEMINI_API_KEY"
+    },
+    "deepseek-harness": {
+      "DEEPSEEK_API_KEY": "MY_DEEPSEEK_API_KEY"
+    }
+  },
+  "opencode_agents": {
+    "read-only": "bridge-review",
+    "workspace-write": "bridge-worker"
+  },
+  "deepseek_profiles": {
+    "grok-4.7": {
+      "read-only": {"profile": "bridge-grok-read", "model_id": "your-provider/grok-4.7"},
+      "workspace-write": {"profile": "bridge-grok-write", "model_id": "your-provider/grok-4.7"}
+    },
+    "step-5-preview": {
+      "read-only": {"profile": "bridge-step-read", "model_id": "your-provider/step-5-preview"},
+      "workspace-write": {"profile": "bridge-step-write", "model_id": "your-provider/step-5-preview"}
+    },
+    "gemini-3.8-flash-high": {
+      "read-only": {"profile": "bridge-gemini-read", "model_id": "your-provider/gemini-3.8-flash-high"},
+      "workspace-write": {"profile": "bridge-gemini-write", "model_id": "your-provider/gemini-3.8-flash-high"}
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex External Provider"
+  short_description: "Use a verified external provider for Codex and native agents"
+  default_prompt: "Use $codex-external-provider only if this Codex session and its native agents can be verified as routed through the configured external provider. Run the read-only preflight before repository work."

@@ -1,0 +1,11 @@
+# Merge these settings into the user's CODEX_HOME/config.toml or a selected
+# user-level profile. Replace all example values with provider-issued values.
+model = "grok-4.7"
+model_provider = "your_external_provider"
+model_catalog_json = "PATH_TO_PRIVATE_MODEL_CATALOG.json"
+
+[model_providers.your_external_provider]
+name = "Your external provider"
+base_url = "https://provider.example.invalid/v1"
+env_key = "EXTERNAL_PROVIDER_API_KEY"
+wire_api = "responses"

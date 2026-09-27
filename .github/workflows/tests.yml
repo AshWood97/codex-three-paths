@@ -1,0 +1,36 @@
+name: Test skills
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check package and run tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          roots = sorted(Path('.agents/skills').glob('*/SKILL.md'))
+          expected = {
+              'codex-native-orchestrator',
+              'codex-external-provider',
+              'codex-harness-bridge',
+          }
+          assert {path.parent.name for path in roots} == expected, roots
+          PY
+          for skill in codex-native-orchestrator codex-external-provider codex-harness-bridge; do
+            python -B -m unittest discover -s ".agents/skills/$skill/tests" -p 'test_*.py' -q
+          done

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-native-orchestrator/result.schema.json",
+  "type": "object",
+  "$defs": {
+    "runtime_configuration": {
+      "type": "object",
+      "required": ["model", "effort", "sandbox"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "effort": {"type": "string", "minLength": 1},
+        "sandbox": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema_version", "run_id", "task_id", "role", "outcome", "summary", "decisions", "modified_files", "commit_sha", "commands", "tests", "test_evidence", "findings", "residual_risks", "follow_up_actions", "requested", "observed"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "run_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "role": {"type": "string", "enum": ["explorer", "worker", "tester", "researcher", "reviewer", "guardian"]},
+    "outcome": {"type": "string", "enum": ["succeeded", "failed", "needs_input", "cancelled"]},
+    "summary": {"type": "string"},
+    "decisions": {"type": "array", "items": {"type": "string"}},
+    "modified_files": {"type": "array", "items": {"type": "string"}},
+    "commit_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+    "commands": {"type": "array", "items": {"type": "string"}},
+    "tests": {"type": "array", "items": {"type": "string"}},
+    "test_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "exit_code", "output_hash", "artifact_hashes"],
+        "properties": {
+          "command": {"type": "string", "minLength": 1},
+          "exit_code": {"type": "integer"},
+          "output_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "artifact_hashes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "findings": {"type": "array", "items": {"type": "string"}},
+    "residual_risks": {"type": "array", "items": {"type": "string"}},
+    "follow_up_actions": {"type": "array", "items": {"type": "string"}},
+    "requested": {"$ref": "#/$defs/runtime_configuration"},
+    "observed": {"$ref": "#/$defs/runtime_configuration"}
+  },
+  "additionalProperties": false
+}
