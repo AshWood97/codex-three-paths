@@ -21,11 +21,14 @@ field in `observed`.
 ## Review order
 
 The root reviews the integrated diff, ownership check, test output, and
-dependency evidence before delivery. The Astra `reviewer` is an independent
+dependency evidence before delivery. The Sol `reviewer` is an independent
 read-only pass for material correctness, permission, data-integrity,
 concurrency, compatibility, and missing-test risks. Resolve material findings
 inside the owned scope and rerun focused validation. Do not describe a change
 as Astra-approved after a `revise` verdict or after a post-gate scope change.
+For material changes, Tester supplies concrete verification evidence before
+Reviewer examines the final integrated result. The root checks that the test
+commands were suitable for the task and refreshes evidence after any fix.
 
 For a `final` gate, the packet must bind the deterministic final diff to the
 recorded base and delivery commits, changed paths, and canonical diff hash.

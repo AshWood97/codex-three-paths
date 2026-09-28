@@ -9,12 +9,11 @@ Every delegated node receives a compact, auditable contract:
 - **Deliverable** — the expected result and handoff format.
 - **Acceptance criteria** — commands, tests, or facts that prove completion.
 
-For implementation work, carry the [software change quality and verification
-standard](../SKILL.md#software-change-quality) into the writer's constraints
-and acceptance criteria. Name the checks relevant to the changed code and
-require the writer to report their commands and results. The root remains
-responsible for reviewing the integrated diff and rerunning checks affected by
-integration.
+For implementation work, name the checks relevant to the changed code in the
+writer's acceptance criteria and require exact commands and results. The root
+reviews the integrated diff and reruns checks affected by integration. Apply
+the role triggers in [routing](routing.md) for independent verification and
+review.
 
 The root owns architecture, decomposition, integration, conflict resolution,
 and final verification. A subagent reports an architectural decision, new
@@ -28,20 +27,19 @@ The five routine subagent roles are fixed; the guardian is controller-only:
 
 | Role | Model / effort | Default purpose | Writes |
 | --- | --- | --- | --- |
-| `explorer` | GPT-6 Luna / high | map repository paths, symbols, tests, and constraints | no |
-| `worker` | GPT-6 Luna / high | implement a bounded change | assigned paths only |
-| `tester` | GPT-6 Luna / high | reproduce and validate behavior | tests only when requested |
-| `reviewer` | GPT-6 Sol / medium | independent material review | no |
-| `researcher` | GPT-6 Luna / high | verify current or versioned facts | no |
-| `guardian` | GPT-6 Sol / xhigh | explicitly requested controller gate | no |
+| `explorer` | GPT-6 Luna / max | map repository paths, symbols, tests, and constraints | no |
+| `worker` | GPT-6 Luna / max | implement a bounded change | assigned paths only |
+| `tester` | GPT-6 Sol / xhigh | reproduce and validate behavior | tests only when requested |
+| `reviewer` | GPT-6 Sol / xhigh | independent material review | no |
+| `researcher` | GPT-6 Astra / medium | verify current or versioned facts | no |
+| `guardian` | GPT-6 Astra / medium | explicitly requested controller gate | no |
 
-The root model and effort values are recommendations; the active session's
-user-selected model and effort take precedence. The root recommendation is
-GPT-6 Astra at low effort. The role TOMLs are starting profiles and must agree
-with the manifest. Raise Luna to max or Sol to xhigh only for especially
-demanding work, and make that override explicit. Current Codex guidance starts
-Luna at high, Sol at medium, and Astra at low; see the [subagent configuration
-documentation](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+The global Root and all named roles have fixed model and effort assignments.
+The manifest, controller, installed role files, and global root setting must
+agree before new work is dispatched. Existing sessions may retain previously
+selected models; record what can be observed and do not claim that a file
+change switched a live session. Do not override a role model or effort per
+task. A missing role is a dispatch error, not permission to substitute one.
 
 The root owns the plan but is not a plan node. Persistent-runner task nodes may
 use the five ordinary roles in the table above; `guardian` is invoked only by
@@ -57,7 +55,13 @@ The current checkout is not modified by a runner until the root applies a
 validated integration result.
 
 Read-only nodes may inspect repository state and produce evidence, but may not
-edit files, create commits, change configuration, or apply a run. A
+edit files, create commits, change configuration, or apply a run. A Tester in
+read-only mode must select commands that do not modify the target state;
+commands that generate snapshots, caches, databases, or artifacts in the
+target checkout require a writable test environment. Test-file edits require
+explicit owned paths, followed by a separate verification pass. Generated
+test output belongs in a disposable native Tester environment;
+do not route such required verification through the persistent runner. A
 `read-only` user override converts every node to that mode and blocks writer
 work even if the plan requested it.
 

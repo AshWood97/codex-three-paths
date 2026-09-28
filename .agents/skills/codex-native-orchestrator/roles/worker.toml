@@ -2,7 +2,7 @@ name = "worker"
 description = "Bounded GPT-6 Luna implementation subagent. Use after scope, ownership, and acceptance criteria are understood."
 
 model = "gpt-6-luna"
-model_reasoning_effort = "high"
+model_reasoning_effort = "max"
 sandbox_mode = "workspace-write"
 
 developer_instructions = """

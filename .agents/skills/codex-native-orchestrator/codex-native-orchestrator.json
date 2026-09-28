@@ -13,13 +13,13 @@
     ]
   },
   "roles": {
-    "root": { "model": "gpt-6-astra", "reasoning_effort": "low", "sandbox_mode": "workspace-write" },
-    "explorer": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "read-only" },
-    "worker": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "workspace-write" },
-    "tester": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "workspace-write" },
-    "reviewer": { "model": "gpt-6-sol", "reasoning_effort": "medium", "sandbox_mode": "read-only" },
-    "researcher": { "model": "gpt-6-luna", "reasoning_effort": "high", "sandbox_mode": "read-only" },
-    "guardian": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only", "automatic": false, "requires_explicit_request": true }
+    "root": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "workspace-write" },
+    "explorer": { "model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "read-only" },
+    "worker": { "model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "workspace-write" },
+    "tester": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "workspace-write" },
+    "reviewer": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only" },
+    "researcher": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "read-only" },
+    "guardian": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "read-only", "automatic": false, "requires_explicit_request": true }
   },
   "max_concurrency": 4,
   "runner_defaults": {
@@ -50,16 +50,20 @@
   },
   "timeouts": { "read_only": 1800, "writer": 3600, "guardian": 900 },
   "managed_config_keys": [
+    "model",
+    "model_reasoning_effort",
     "agents.enabled",
     "agents.max_concurrent_threads_per_session",
     "agents.default_subagent_model",
     "agents.default_subagent_reasoning_effort"
   ],
   "config_values": {
+    "model": "gpt-6-astra",
+    "model_reasoning_effort": "medium",
     "agents.enabled": true,
     "agents.max_concurrent_threads_per_session": 4,
     "agents.default_subagent_model": "gpt-6-luna",
-    "agents.default_subagent_reasoning_effort": "high"
+    "agents.default_subagent_reasoning_effort": "max"
   },
   "installation_scope": "global",
   "deployment": {

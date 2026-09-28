@@ -89,18 +89,14 @@ Timeout, availability, transport, startup, missing-section, unknown-verdict,
 or otherwise malformed output is not a valid verdict. A no-valid-verdict
 result may be retried exactly once with the exact same serialized gate packet,
 byte-for-byte unchanged. That retry is part of the same one logical gate. If
-it also produces no valid verdict, apply the fallback rules immediately and
-never retry again after any valid verdict.
+it also produces no valid verdict, mark the gate unavailable and stop. Never
+retry again after any valid verdict.
 
 ## Failure and invalidation
 
-For non-hard work where the user explicitly requested a gate, a failed gate may
-fall back to the normal Astra `reviewer`, and the report must contain the exact
-marker `Astra gate unavailable`.
-A successful fallback is not Astra approval. For a security or
-trust boundary, irreversible migration, financial or regulatory logic, or
-destructive operation, do not silently downgrade: stop until Astra succeeds
-or the user gives an informed explicit waiver.
+An unavailable Guardian gate cannot be replaced by Reviewer approval. Stop
+until the user gives an informed explicit waiver. Record the unavailable
+result and preserve its evidence.
 
 After a valid verdict, do not call Astra again automatically. A substantive
 post-gate scope change invalidates the reviewed decision, trust boundary,

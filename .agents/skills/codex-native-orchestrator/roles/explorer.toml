@@ -2,7 +2,7 @@ name = "explorer"
 description = "Read-only GPT-6 Luna explorer for repository mapping, symbols, execution paths, dependencies, configuration, and tests."
 
 model = "gpt-6-luna"
-model_reasoning_effort = "high"
+model_reasoning_effort = "max"
 sandbox_mode = "read-only"
 
 developer_instructions = """

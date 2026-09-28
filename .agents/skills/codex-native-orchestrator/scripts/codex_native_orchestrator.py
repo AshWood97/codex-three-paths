@@ -35,7 +35,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 SCHEMA_DIR = SKILL_DIR / "schemas"
 MANIFEST_RELATIVE = Path(".agents/skills/codex-native-orchestrator/codex-native-orchestrator.json")
-LEGACY_MANIFEST_RELATIVE = Path(".agents/skills/astra-orchestrator/astra-orchestrator.json")
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -49,26 +48,13 @@ GATE_MODES = {"none", "pre", "final"}
 MAX_CONCURRENCY = 4
 
 DEFAULT_ROLE_SPECS: Dict[str, Dict[str, Any]] = {
-    "root": {"model": "gpt-6-astra", "reasoning_effort": "low", "read_only": False},
-    "explorer": {"model": "gpt-6-luna", "reasoning_effort": "high", "read_only": True},
-    "worker": {"model": "gpt-6-luna", "reasoning_effort": "high", "read_only": False},
-    "tester": {"model": "gpt-6-luna", "reasoning_effort": "high", "read_only": False},
-    "researcher": {"model": "gpt-6-luna", "reasoning_effort": "high", "read_only": True},
-    "reviewer": {"model": "gpt-6-sol", "reasoning_effort": "medium", "read_only": True},
-    "guardian": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": True},
-}
-
-# Runs created by astra-orchestrator hashed a manifest after filling omitted
-# roles from these defaults. Keep this frozen map for legacy hash validation;
-# changing current recommendations must not make old manifests unverifiable.
-LEGACY_DEFAULT_ROLE_SPECS: Dict[str, Dict[str, Any]] = {
     "root": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": False},
     "explorer": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": True},
     "worker": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": False},
-    "tester": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": False},
-    "researcher": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": True},
+    "tester": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": False},
+    "researcher": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": True},
     "reviewer": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": True},
-    "guardian": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": True},
+    "guardian": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": True},
 }
 
 EVENT_TYPES = {
@@ -320,30 +306,36 @@ def _as_list(value: Any) -> List[Any]:
 def _normalize_manifest(
     raw: Any,
     path: Path,
-    role_defaults: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValidationError("source manifest must be a JSON object")
-    roles = json.loads(json.dumps(role_defaults or DEFAULT_ROLE_SPECS))
-    supplied = raw.get("roles", raw.get("role_map", {}))
-    if supplied is not None and not isinstance(supplied, dict):
-        raise ValidationError("manifest roles must be an object")
-    for name, spec in (supplied or {}).items():
-        if name not in ROLE_NAMES:
-            raise ValidationError("unknown manifest role: %s" % name)
-        if isinstance(spec, str):
-            roles[name]["model"] = spec
-        elif isinstance(spec, dict):
-            roles[name].update(spec)
-            if "reasoning" in spec and "reasoning_effort" not in spec:
-                roles[name]["reasoning_effort"] = spec["reasoning"]
-        else:
-            raise ValidationError("manifest role %s must be an object or model string" % name)
+    roles = raw.get("roles")
+    if not isinstance(roles, dict) or set(roles) != ROLE_NAMES:
+        raise ValidationError("manifest must declare every fixed role exactly once")
+    for name, fixed in DEFAULT_ROLE_SPECS.items():
+        spec = roles[name]
+        sandbox = "read-only" if fixed["read_only"] else "workspace-write"
+        if not isinstance(spec, dict) or any(spec.get(field) != value for field, value in (
+            ("model", fixed["model"]),
+            ("reasoning_effort", fixed["reasoning_effort"]),
+            ("sandbox_mode", sandbox),
+        )):
+            raise ValidationError("manifest role %s differs from the fixed topology" % name)
     max_concurrency = raw.get("max_concurrency", raw.get("max_concurrent_threads", 4))
     if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool) or max_concurrency < 1 or max_concurrency > MAX_CONCURRENCY:
         raise ValidationError("manifest max_concurrency must be an integer from 1 to %d" % MAX_CONCURRENCY)
+    fixed_config = {
+        "model": DEFAULT_ROLE_SPECS["root"]["model"],
+        "model_reasoning_effort": DEFAULT_ROLE_SPECS["root"]["reasoning_effort"],
+        "agents.enabled": True,
+        "agents.max_concurrent_threads_per_session": max_concurrency,
+        "agents.default_subagent_model": DEFAULT_ROLE_SPECS["worker"]["model"],
+        "agents.default_subagent_reasoning_effort": DEFAULT_ROLE_SPECS["worker"]["reasoning_effort"],
+    }
+    if raw.get("config_values") != fixed_config or set(raw.get("managed_config_keys", [])) != set(fixed_config):
+        raise ValidationError("manifest managed config differs from the fixed topology")
     result = dict(raw)
-    result["roles"] = roles
+    result["roles"] = json.loads(json.dumps(roles))
     result["max_concurrency"] = max_concurrency
     result["manifest_path"] = str(path)
     return result
@@ -357,31 +349,8 @@ def load_manifest(repo: Path, required: bool = False) -> Dict[str, Any]:
     if not path.is_file():
         if required:
             raise ValidationError("source manifest is missing: %s" % path)
-        return {"schema_version": SCHEMA_VERSION, "roles": json.loads(json.dumps(DEFAULT_ROLE_SPECS)), "max_concurrency": 4, "_missing": True}
+        raise ValidationError("fixed role manifest is missing: %s" % path)
     return _normalize_manifest(read_json(path), path)
-
-
-def load_legacy_manifest_for_state(state: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """Load the former global manifest only when it matches a saved run hash.
-
-    The manifest has no user home path baked into this package. Resolving it
-    from the current user's home preserves resumes while the legacy skill is
-    retained as the documented compatibility entry point.
-    """
-    candidates = (Path.home() / LEGACY_MANIFEST_RELATIVE,)
-    expected_hash = state.get("manifest_hash")
-    for path in candidates:
-        path = Path(os.path.abspath(str(path)))
-        if not path.is_file():
-            continue
-        try:
-            manifest = _normalize_manifest(read_json(path), path, role_defaults=LEGACY_DEFAULT_ROLE_SPECS)
-        except ControllerError:
-            continue
-        digest = sha256_json({key: value for key, value in manifest.items() if key != "manifest_path"})
-        if digest == expected_hash:
-            return manifest
-    return None
 
 
 def role_spec(manifest: Mapping[str, Any], role: str) -> Dict[str, Any]:
@@ -453,7 +422,7 @@ def normalize_plan(plan: Mapping[str, Any], manifest: Optional[Mapping[str, Any]
         if not isinstance(deps, list) or any(not isinstance(dep, str) for dep in deps):
             raise ValidationError("task %s dependencies must be an array of ids" % task_id)
         owned = normalize_owned_paths(raw.get("owned_paths", raw.get("ownedPaths", [])))
-        read_only_default = role in READ_ONLY_ROLES
+        read_only_default = role in READ_ONLY_ROLES or role == "tester"
         raw_read_only = raw.get("read_only", raw.get("readonly", read_only_default))
         raw_writes = raw.get("writes", not raw_read_only)
         if not isinstance(raw_read_only, bool):
@@ -464,6 +433,8 @@ def normalize_plan(plan: Mapping[str, Any], manifest: Optional[Mapping[str, Any]
         writes = False if global_read_only else raw_writes
         if role in READ_ONLY_ROLES and (not read_only or writes):
             raise ValidationError("task %s role %s is read-only and cannot request writes" % (task_id, role))
+        if role == "tester" and (not read_only or writes):
+            raise ValidationError("task %s tester must be read-only in the persistent runner; use native dispatch for writable tests" % task_id)
         if read_only and writes:
             raise ValidationError("task %s cannot be both read_only and writes" % task_id)
         if not read_only and not writes:
@@ -568,6 +539,14 @@ def normalize_plan(plan: Mapping[str, Any], manifest: Optional[Mapping[str, Any]
         "topological_order": order,
         "critical_path_rank": critical_path_rank,
     })
+    writer_ids = {task["task_id"] for task in tasks if task["writes"]}
+    if gate_mode == "final" and writer_ids and not any(
+        task["role"] == "tester"
+        and task["read_only"]
+        and writer_ids.issubset(set(_writer_ancestors(result, task["task_id"])))
+        for task in tasks
+    ):
+        raise ValidationError("final Guardian gate requires a read-only tester downstream of every writer")
     return result
 
 
@@ -1184,7 +1163,6 @@ class RunStore:
             "hard_risk": normalized["hard_risk"],
             "tasks": tasks,
             "gate": None,
-            "astra_fallback": None,
             "review": None,
             "integration": None,
             "usage": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "observed": False},
@@ -1202,7 +1180,7 @@ class RunStore:
 
 
 RUN_TRANSITIONS = {
-    "planned": {"running", "cancelled", "failed"},
+    "planned": {"running", "needs_input", "cancelled", "failed"},
     "running": {"running", "needs_input", "completed", "failed", "cancelled"},
     "needs_input": {"running", "needs_input", "failed", "cancelled", "completed"},
     "completed": {"applying", "needs_input", "failed", "cancelled", "cleaned"},
@@ -1463,8 +1441,12 @@ class CodexRunner:
             raise ValidationError("unknown runner role: %s" % role)
         if not isinstance(read_only, bool):
             raise ValidationError("runner read_only must be a boolean")
+        supplied_spec = self.role_specs.get(role, {})
+        for field in ("model", "reasoning_effort"):
+            if supplied_spec.get(field, DEFAULT_ROLE_SPECS[role][field]) != DEFAULT_ROLE_SPECS[role][field]:
+                raise ValidationError("runner role %s differs from the fixed %s" % (role, field))
         requested_spec = dict(DEFAULT_ROLE_SPECS[role])
-        requested_spec.update(self.role_specs.get(role, {}))
+        requested_spec.update(supplied_spec)
         if (requested_spec.get("read_only") is True or requested_spec.get("sandbox_mode") == "read-only") and not read_only:
             raise ValidationError("runner role %s cannot be promoted out of read-only mode" % role)
         schema = Path(output_schema or (self.schema_dir / ("gate.schema.json" if role == "guardian" else "result.schema.json")))
@@ -1476,8 +1458,6 @@ class CodexRunner:
         for attempt in range(attempts):
             try:
                 result = self._call(prompt, role, read_only, cwd, schema, timeout)
-                result.setdefault("attempts", attempt + 1)
-                return result
             except (ControllerError, UnknownCodexEventError, WriterUncertainty, OSError, subprocess.SubprocessError) as exc:
                 errors.append(str(exc))
                 if not read_only:
@@ -1485,6 +1465,25 @@ class CodexRunner:
                 if attempt + 1 >= attempts:
                     qualifier = " after one retry" if attempts == 2 else ""
                     raise ControllerError("read-only Codex invocation failed%s: %s" % (qualifier, errors[-1])) from exc
+                continue
+            expected_runtime = {
+                "model": requested_spec["model"],
+                "reasoning_effort": requested_spec["reasoning_effort"],
+                "sandbox_mode": "read-only" if read_only else "workspace-write",
+            }
+            for runtime_kind in ("requested_runtime", "observed_runtime"):
+                runtime = result.get(runtime_kind, {})
+                if not isinstance(runtime, Mapping):
+                    raise ValidationError("%s for %s is malformed" % (runtime_kind, role))
+                for field, expected_value in expected_runtime.items():
+                    actual = runtime.get(field, "unknown")
+                    if actual not in {None, "", "unknown", expected_value}:
+                        error = "%s for %s reports %s=%s; fixed value is %s" % (runtime_kind, role, field, actual, expected_value)
+                        if not read_only:
+                            raise WriterUncertainty(error)
+                        raise ValidationError(error)
+            result.setdefault("attempts", attempt + 1)
+            return result
         raise ControllerError("Codex invocation failed: %s" % "; ".join(errors))
 
 
@@ -1603,8 +1602,8 @@ def build_gate_packet(plan: Mapping[str, Any], state: Mapping[str, Any], mode: O
         "Test evidence": state.get("test_evidence", "not applicable"),
         "Controller isolation request": {
             "launcher": "codex --ask-for-approval never exec --strict-config --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check --sandbox read-only",
-            "model": "gpt-6-sol",
-            "reasoning_effort": "xhigh",
+            "model": DEFAULT_ROLE_SPECS["guardian"]["model"],
+            "reasoning_effort": DEFAULT_ROLE_SPECS["guardian"]["reasoning_effort"],
             "sandbox_mode": "read-only",
             "temporary_minimal_codex_home": True,
             "trusted_empty_cwd": True,
@@ -1642,7 +1641,7 @@ def build_gate_packet(plan: Mapping[str, Any], state: Mapping[str, Any], mode: O
             if plan.get("gate_mode") == "final"
             else state.get("test_evidence", "not applicable")
         )
-        packet["Sol review"] = state.get("review") or "not applicable"
+        packet["Reviewer result"] = state.get("review") or "not applicable"
     return packet
 
 
@@ -1651,8 +1650,8 @@ def validate_guardian_runtime(result: Mapping[str, Any]) -> None:
     if not isinstance(requested, Mapping):
         raise ValidationError("guardian result has no controller runtime evidence")
     expected = {
-        "model": "gpt-6-sol",
-        "reasoning_effort": "xhigh",
+        "model": DEFAULT_ROLE_SPECS["guardian"]["model"],
+        "reasoning_effort": DEFAULT_ROLE_SPECS["guardian"]["reasoning_effort"],
         "sandbox_mode": "read-only",
         "approval_policy": "never",
         "ephemeral": True,
@@ -1670,8 +1669,8 @@ def validate_guardian_runtime(result: Mapping[str, Any]) -> None:
     if not isinstance(observed, Mapping):
         raise ValidationError("guardian observed runtime evidence is malformed")
     comparisons = {
-        "model": "gpt-6-sol",
-        "reasoning_effort": "xhigh",
+        "model": DEFAULT_ROLE_SPECS["guardian"]["model"],
+        "reasoning_effort": DEFAULT_ROLE_SPECS["guardian"]["reasoning_effort"],
         "sandbox_mode": "read-only",
     }
     for key, expected_value in comparisons.items():
@@ -1701,7 +1700,7 @@ def run_guardian(store: RunStore, state: Dict[str, Any], plan: Mapping[str, Any]
             "invocation_count": 0,
             "waiver": waiver,
             "status": "pending",
-            "requested_runtime": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only", "approval_policy": "never", "ephemeral": True, "temporary_codex_home": True, "external_user_mcp_and_plugins_loaded": False, "trusted_empty_cwd": True, "ignore_user_config": True, "ignore_rules": True, "skip_git_repo_check": True},
+            "requested_runtime": {"model": DEFAULT_ROLE_SPECS["guardian"]["model"], "reasoning_effort": DEFAULT_ROLE_SPECS["guardian"]["reasoning_effort"], "sandbox_mode": "read-only", "approval_policy": "never", "ephemeral": True, "temporary_codex_home": True, "external_user_mcp_and_plugins_loaded": False, "trusted_empty_cwd": True, "ignore_user_config": True, "ignore_rules": True, "skip_git_repo_check": True},
             "observed_runtime": {"model": "unknown", "reasoning_effort": "unknown", "sandbox_mode": "unknown"},
         }
         state["gate"] = gate
@@ -1785,38 +1784,6 @@ def run_guardian(store: RunStore, state: Dict[str, Any], plan: Mapping[str, Any]
                 journal.append("gate_unavailable", {"gate_id": gate_id, "packet_hash": packet_hash, "retry_count": 1, "marker": "Astra gate unavailable"})
                 return gate
     return gate
-
-
-def run_reviewer_fallback(store: RunStore, state: Dict[str, Any], plan: Mapping[str, Any], repo: Path, runner: CodexRunner) -> Dict[str, Any]:
-    """Run the documented soft-risk fallback without pretending it is gate approval."""
-    packet = build_gate_packet(plan, state, mode=str(plan["gate_mode"]))
-    packet["Fallback marker"] = "Astra gate unavailable"
-    packet_hash = sha256_json(packet)
-    result = runner.invoke(
-        prompt=canonical_json(packet).decode("utf-8"),
-        role="reviewer",
-        read_only=True,
-        cwd=repo,
-        output_schema=SCHEMA_DIR / "gate.schema.json",
-        timeout=float(plan.get("reviewer_timeout", 1800)),
-        max_attempts=2,
-    )
-    parsed = parse_gate_response(result)
-    fallback = {
-        "marker": "Astra gate unavailable",
-        "packet_hash": packet_hash,
-        "verdict": parsed["verdict"],
-        "important_findings": parsed["important_findings"],
-        "required_changes": parsed["required_changes"],
-        "residual_risks": parsed["residual_risks"],
-        "requested_runtime": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only"},
-        "observed_runtime": result.get("observed_runtime", {"model": "unknown", "reasoning_effort": "unknown", "sandbox_mode": "unknown"}),
-    }
-    state["astra_fallback"] = fallback
-    store.save_state(state["run_id"], state)
-    atomic_write_json(store.run_path(state["run_id"]) / "results" / "sol-fallback.json", fallback, mode=0o600)
-    EventJournal(store.run_path(state["run_id"]) / "events.jsonl", state["run_id"]).append("review_completed", {"kind": "astra-fallback", "verdict": parsed["verdict"], "packet_hash": packet_hash})
-    return fallback
 
 
 def _task_lookup(plan: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -1997,14 +1964,14 @@ class Orchestrator:
 
     def _manifest_matches_run(self, state: Mapping[str, Any]) -> bool:
         current_hash = sha256_json({key: value for key, value in self.manifest.items() if key != "manifest_path"})
-        if current_hash == state.get("manifest_hash"):
-            return True
-        legacy = load_legacy_manifest_for_state(state)
-        if legacy is None:
-            return False
-        self.manifest = legacy
-        self.runner.role_specs = {name: dict(spec) for name, spec in legacy.get("roles", {}).items()}
-        return True
+        return current_hash == state.get("manifest_hash")
+
+    def _require_installed_topology(self) -> None:
+        report = global_doctor(self.repo, self.codex_home, self.manifest)
+        checks = report["checks"]
+        drift = [name for name in ("roles", "config", "project_overrides") if not checks[name]["ok"]]
+        if drift:
+            raise ValidationError("installed fixed topology differs from the manifest: %s" % ", ".join(drift))
 
     def validate(self, plan_path: Path) -> Dict[str, Any]:
         plan = read_json(Path(plan_path).resolve())
@@ -2014,6 +1981,7 @@ class Orchestrator:
         normalized = validate_plan(read_json(Path(plan_path).resolve()), manifest=self.manifest)
         if dry_run:
             return {"ok": True, "dry_run": True, "plan": normalized, "plan_hash": sha256_json(normalized)}
+        self._require_installed_topology()
         snapshot = repo_snapshot(self.repo)
         has_writers = any(task["writes"] for task in normalized["tasks"])
         if has_writers and not snapshot["clean"]:
@@ -2046,20 +2014,8 @@ class Orchestrator:
             gate = run_guardian(self.store, state, plan, cwd, self.runner, mode=str(plan["gate_mode"]))
         if gate["status"] == "approve":
             return True
-        if gate["status"] == "unavailable" and not plan["hard_risk"]:
-            fallback = state.get("astra_fallback")
-            if not isinstance(fallback, Mapping):
-                try:
-                    fallback = run_reviewer_fallback(self.store, state, plan, cwd, self.runner)
-                except ControllerError as exc:
-                    state["error"] = "Astra gate unavailable; reviewer fallback failed: %s" % exc
-                    fallback = None
-            if isinstance(fallback, Mapping):
-                if fallback.get("marker") == "Astra gate unavailable" and fallback.get("verdict") == "approve":
-                    return True
-                state["error"] = "Astra gate unavailable; reviewer fallback verdict %s" % fallback.get("verdict", "invalid")
-        elif gate["status"] == "unavailable":
-            state["error"] = "Astra gate unavailable; hard-risk work requires Astra success or an explicit waiver"
+        if gate["status"] == "unavailable":
+            state["error"] = "Astra gate unavailable; an explicit waiver is required to continue"
         else:
             state["error"] = "guardian verdict %s" % gate["status"]
         self.store.save_state(state["run_id"], state)
@@ -2536,7 +2492,8 @@ class Orchestrator:
         if not state.get("integration"):
             return True
         packet = build_gate_packet(plan, state, mode="final")
-        packet["Review kind"] = "ordinary GPT-6 Sol medium integration review"
+        packet.pop("Controller isolation request", None)
+        packet["Review kind"] = "ordinary independent integration review"
         packet["Integration"] = state["integration"]
         packet_hash = sha256_json(packet)
         existing = state.get("review")
@@ -2560,7 +2517,7 @@ class Orchestrator:
             "required_changes": parsed["required_changes"],
             "residual_risks": parsed["residual_risks"],
             "integration_evidence_hash": state["integration"]["evidence_hash"],
-            "requested_runtime": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only"},
+            "requested_runtime": {"model": DEFAULT_ROLE_SPECS["reviewer"]["model"], "reasoning_effort": DEFAULT_ROLE_SPECS["reviewer"]["reasoning_effort"], "sandbox_mode": "read-only"},
             "observed_runtime": result.get("observed_runtime", {"model": "unknown", "reasoning_effort": "unknown", "sandbox_mode": "unknown"}),
         }
         state["review"] = review
@@ -2775,7 +2732,7 @@ class Orchestrator:
             } or "not applicable"
             self.store.save_state(run_id, state)
             if not self._run_final_reviewer_review(state, plan):
-                state["error"] = "GPT-6 Sol medium integration review requires revision"
+                state["error"] = "independent integration review requires revision"
                 self.store.save_state(run_id, state)
                 transition_run(self.store, state, "needs_input", "run_needs_input", {"reason": state["error"]})
                 return
@@ -2811,6 +2768,7 @@ class Orchestrator:
                 if state["state"] != "needs_input":
                     transition_run(self.store, state, "needs_input", "run_needs_input", {"reason": state["error"]})
                 return {"ok": True, "run_id": run_id, "state": state["state"], "needs_input": True, "error": state["error"]}
+            self._require_installed_topology()
             if waiver is not None:
                 if not isinstance(waiver, str) or not waiver.strip():
                     raise ValidationError("guardian waiver must be non-empty")
@@ -2988,7 +2946,6 @@ class Orchestrator:
             "uncertainties": uncertainties,
             "tasks": state["tasks"],
             "gate": state.get("gate"),
-            "astra_fallback": state.get("astra_fallback"),
             "review": state.get("review"),
             "integration": state.get("integration"),
             "usage": state.get("usage"),
@@ -3030,9 +2987,8 @@ class Orchestrator:
                     state["gate"]["status"] = "waived"
                 self.store.save_state(run_id, state)
             gate = state.get("gate") or {}
-            fallback_ok = gate.get("status") == "unavailable" and not plan["hard_risk"] and (state.get("astra_fallback") or {}).get("marker") == "Astra gate unavailable" and (state.get("astra_fallback") or {}).get("verdict") == "approve"
-            if plan["gate_mode"] != "none" and gate.get("status") not in {"approve", "waived"} and not fallback_ok:
-                raise ControllerError("apply requires a valid guardian result, documented soft fallback, or explicit waiver")
+            if plan["gate_mode"] != "none" and gate.get("status") not in {"approve", "waived"}:
+                raise ControllerError("apply requires a valid guardian result or explicit waiver")
             if gate.get("status") == "waived" and state["state"] == "needs_input":
                 if any(task.get("state") != "succeeded" for task in state.get("tasks", {}).values()):
                     raise ControllerError("guardian waiver cannot bypass an incomplete task")
@@ -3051,7 +3007,7 @@ class Orchestrator:
                 raise RepoSafetyError("integration evidence is incomplete")
             reviewer_review = state.get("review") or {}
             if reviewer_review.get("verdict") != "approve" or reviewer_review.get("integration_evidence_hash") != integration.get("evidence_hash"):
-                raise RepoSafetyError("Sol review is absent or stale for the integration evidence")
+                raise RepoSafetyError("Reviewer result is absent or stale for the integration evidence")
             if plan["gate_mode"] == "final" and gate.get("status") == "approve":
                 current_gate_hash = sha256_json(build_gate_packet(plan, state, mode="final"))
                 if current_gate_hash != gate.get("packet_hash"):
@@ -4019,19 +3975,33 @@ def global_doctor(repo: Path, codex_home: Path, manifest: Mapping[str, Any]) -> 
         roles[name] = {"ok": actual == expected, "path": str(path), "expected": expected, "actual": actual}
     checks["roles"] = {"ok": all(v["ok"] for v in roles.values()), "roles": roles}
     conflicts = []
+    managed_keys = set(manifest["managed_config_keys"])
     for directory in (repo, *repo.parents):
+        if directory == Path.home():
+            continue
         local_skill = directory / MANIFEST_RELATIVE.parent / "SKILL.md"
         if local_skill.is_file() and local_skill.resolve() != (SKILL_DIR / "SKILL.md").resolve():
             conflicts.append(str(local_skill))
-        if directory != Path.home():
-            for name in sorted(TASK_ROLE_NAMES):
-                local_role = directory / ".codex" / "agents" / (name + ".toml")
-                if local_role.is_file() and local_role.resolve() != (codex_home / "agents" / (name + ".toml")).resolve():
-                    conflicts.append(str(local_role))
+        local_config = directory / ".codex" / "config.toml"
+        if local_config.is_file() and local_config.resolve() != (codex_home / "config.toml").resolve():
+            try:
+                local_values = _collect_managed_toml_scalars(local_config.read_text(encoding="utf-8"), managed_keys)
+                if local_values:
+                    conflicts.append(str(local_config) + " (managed keys: " + ", ".join(sorted(local_values)) + ")")
+            except (ControllerError, OSError, UnicodeError) as exc:
+                conflicts.append(str(local_config) + " (cannot inspect: " + str(exc) + ")")
+        for name in sorted(TASK_ROLE_NAMES):
+            local_role = directory / ".codex" / "agents" / (name + ".toml")
+            if local_role.is_file() and local_role.resolve() != (codex_home / "agents" / (name + ".toml")).resolve():
+                conflicts.append(str(local_role))
     checks["project_overrides"] = {"ok": not conflicts, "conflicts": conflicts}
     try:
-        validate_codex_config_bytes((codex_home / "config.toml").read_bytes())
-        checks["config"] = {"ok": True}
+        config_bytes = (codex_home / "config.toml").read_bytes()
+        validate_codex_config_bytes(config_bytes)
+        expected_values = config_values_from_manifest(manifest)
+        expected = {key: _toml_scalar(value) for key, value in expected_values.items()}
+        actual = _collect_managed_toml_scalars(config_bytes.decode("utf-8"), expected)
+        checks["config"] = {"ok": actual == expected, "expected": expected, "actual": actual}
     except (ControllerError, OSError) as exc:
         checks["config"] = {"ok": False, "error": str(exc)}
     return {"ok": all(v["ok"] for v in checks.values()), "scope": "global", "checks": checks}

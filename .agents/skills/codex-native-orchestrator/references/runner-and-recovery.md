@@ -17,6 +17,16 @@ Each plan node declares `task_id`, `role`, `depends_on`, `owned_paths`,
 carry `objective`, `scope`, `non_goals`, `acceptance_criteria`, `write_mode`,
 `context_refs`, `timeout`, and `retry_policy`. Normalized relative paths must
 remain inside the repository and cannot overlap another writer.
+Material writer plans include a `tester` node downstream of affected writers.
+Tester records concrete commands and results before the controller's ordinary
+integration review. A `final` Guardian gate additionally requires successful
+read-only Tester evidence downstream of every writer.
+Runner Tester nodes must use read-only checks. A `writes=true` Tester node is
+integrated as a delivery writer. For required tests that generate output,
+choose native dispatch so Tester evidence precedes Reviewer. If the user
+explicitly requires this runner, stop and report the unsupported verification
+path. Do not request a final Guardian gate when its read-only Tester evidence
+cannot be produced.
 
 Durable runs live below the manifest's `run_state_root` and contain the plan,
 state, a JSONL event journal, per-node structured inputs/results/evidence, and

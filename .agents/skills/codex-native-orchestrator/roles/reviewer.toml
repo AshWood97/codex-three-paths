@@ -2,7 +2,7 @@ name = "reviewer"
 description = "Read-only GPT-6 Sol reviewer for correctness, security, regression, concurrency, data-integrity, compatibility, and missing-test risks."
 
 model = "gpt-6-sol"
-model_reasoning_effort = "medium"
+model_reasoning_effort = "xhigh"
 sandbox_mode = "read-only"
 
 developer_instructions = """

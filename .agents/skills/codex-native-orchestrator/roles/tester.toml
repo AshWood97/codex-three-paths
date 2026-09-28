@@ -1,8 +1,8 @@
 name = "tester"
-description = "GPT-6 Luna verification subagent for focused tests, reproductions, regression checks, and requested test additions."
+description = "GPT-6 Sol verification subagent for focused tests, reproductions, regression checks, and requested test additions."
 
-model = "gpt-6-luna"
-model_reasoning_effort = "high"
+model = "gpt-6-sol"
+model_reasoning_effort = "xhigh"
 sandbox_mode = "workspace-write"
 
 developer_instructions = """

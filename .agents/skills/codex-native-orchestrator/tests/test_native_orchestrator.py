@@ -11,82 +11,6 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import codex_native_orchestrator as controller  # noqa: E402
 
 
-LEGACY_ROLES = {
-    "root": {"model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "workspace-write"},
-    "explorer": {"model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "read-only"},
-    "worker": {"model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "workspace-write"},
-    "tester": {"model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "workspace-write"},
-    "reviewer": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only"},
-    "researcher": {"model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "read-only"},
-    "guardian": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only", "automatic": False, "requires_explicit_request": True},
-}
-
-
-def legacy_manifest():
-    return {
-        "schema_version": 1,
-        "package_version": "2.4.2",
-        "package_id": "astra-orchestrator",
-        "skill": {"entry": ".agents/skills/astra-orchestrator/SKILL.md", "references": []},
-        "roles": LEGACY_ROLES,
-        "max_concurrency": 4,
-        "runner_defaults": {
-            "mode": "hybrid",
-            "decision": "auto",
-            "max_agents": 4,
-            "triggers": [
-                "explicit_dag_batch_resume_persistence_request",
-                "three_or_more_dependent_nodes",
-                "two_or_more_parallel_writers",
-                "cross_turn_recovery",
-            ],
-            "multi_file_is_trigger": False,
-            "overrides": ["runner on", "runner off", "root-only", "max agents N", "read-only"],
-        },
-        "paths": {
-            "run_state_root": "~/.codex/astra-orchestrator/runs",
-            "user_config": "~/.codex/config.toml",
-            "user_agents_dir": "~/.codex/agents",
-            "user_skill_dir": "~/.agents/skills/astra-orchestrator",
-        },
-        "timeouts": {"read_only": 1800, "writer": 3600, "guardian": 900},
-        "managed_config_keys": [
-            "agents.enabled",
-            "agents.max_concurrent_threads_per_session",
-            "agents.default_subagent_model",
-            "agents.default_subagent_reasoning_effort",
-        ],
-        "installation_scope": "global",
-        "config_values": {
-            "agents.enabled": True,
-            "agents.max_concurrent_threads_per_session": 4,
-            "agents.default_subagent_model": "gpt-6-luna",
-            "agents.default_subagent_reasoning_effort": "max",
-        },
-    }
-
-
-def legacy_controller_manifest(raw, path):
-    """Reproduce manifest expansion from the pre-migration controller."""
-    defaults = {
-        "root": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": False},
-        "explorer": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": True},
-        "worker": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": False},
-        "tester": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": False},
-        "researcher": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": True},
-        "reviewer": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": True},
-        "guardian": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": True},
-    }
-    roles = json.loads(json.dumps(defaults))
-    for name, spec in raw.get("roles", {}).items():
-        roles[name].update(spec)
-    result = dict(raw)
-    result["roles"] = roles
-    result["max_concurrency"] = raw.get("max_concurrency", 4)
-    result["manifest_path"] = str(path)
-    return result
-
-
 def make_plan(manifest, writer=True):
     task = {
         "task_id": "write-file" if writer else "inspect",
@@ -109,20 +33,50 @@ def make_plan(manifest, writer=True):
 
 
 class NativePackageTests(unittest.TestCase):
-    def test_manifest_profiles_use_current_codex_effort_starts(self):
+    def test_manifest_profiles_use_configured_efforts(self):
         manifest = controller.load_manifest(Path.cwd())
         self.assertEqual(manifest["package_id"], "codex-native-orchestrator")
-        self.assertEqual(manifest["roles"]["root"]["reasoning_effort"], "low")
-        for role in ("explorer", "worker", "tester", "researcher"):
-            self.assertEqual(manifest["roles"][role]["reasoning_effort"], "high")
-        self.assertEqual(manifest["roles"]["reviewer"]["reasoning_effort"], "medium")
-        self.assertEqual(manifest["roles"]["guardian"]["reasoning_effort"], "xhigh")
+        self.assertEqual(manifest["roles"]["root"]["reasoning_effort"], "medium")
+        for role in ("explorer", "worker"):
+            self.assertEqual(manifest["roles"][role]["model"], "gpt-6-luna")
+            self.assertEqual(manifest["roles"][role]["reasoning_effort"], "max")
+        self.assertEqual(manifest["roles"]["tester"]["model"], "gpt-6-sol")
+        self.assertEqual(manifest["roles"]["tester"]["reasoning_effort"], "xhigh")
+        self.assertEqual(manifest["roles"]["researcher"]["model"], "gpt-6-astra")
+        self.assertEqual(manifest["roles"]["researcher"]["reasoning_effort"], "medium")
+        self.assertEqual(manifest["roles"]["reviewer"]["model"], "gpt-6-sol")
+        self.assertEqual(manifest["roles"]["reviewer"]["reasoning_effort"], "xhigh")
+        self.assertEqual(manifest["roles"]["guardian"]["model"], "gpt-6-astra")
+        self.assertEqual(manifest["roles"]["guardian"]["reasoning_effort"], "medium")
         for profile in ("explorer", "worker", "tester", "researcher", "reviewer", "guardian"):
             text = (SCRIPT_DIR.parent / "roles" / (profile + ".toml")).read_text()
             self.assertIn('name = "%s"' % profile, text)
             self.assertIn('model_reasoning_effort = "%s"' % manifest["roles"][profile]["reasoning_effort"], text)
 
-    def test_run_store_keeps_legacy_state_namespace_and_report_contract(self):
+    def test_guardian_runtime_requires_astra_medium(self):
+        requested = {
+            "model": "gpt-6-astra",
+            "reasoning_effort": "medium",
+            "sandbox_mode": "read-only",
+            "approval_policy": "never",
+            "ephemeral": True,
+            "temporary_codex_home": True,
+            "external_user_mcp_and_plugins_loaded": False,
+            "trusted_empty_cwd": True,
+            "ignore_user_config": True,
+            "ignore_rules": True,
+            "skip_git_repo_check": True,
+        }
+        result = {
+            "requested_runtime": requested,
+            "observed_runtime": {"model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "read-only"},
+        }
+        controller.validate_guardian_runtime(result)
+        result["observed_runtime"] = {"model": "invalid-model", "reasoning_effort": "invalid", "sandbox_mode": "read-only"}
+        with self.assertRaises(controller.ValidationError):
+            controller.validate_guardian_runtime(result)
+
+    def test_run_store_report_contract(self):
         with tempfile.TemporaryDirectory() as temp:
             codex_home = Path(temp) / "codex-home"
             repo = Path(temp) / "repo"
@@ -143,107 +97,129 @@ class NativePackageTests(unittest.TestCase):
             self.assertIn("checks", report)
             self.assertIn("uncertainties", report)
 
-    def test_existing_run_resumes_with_matching_legacy_manifest(self):
+    def test_stale_run_cannot_resume_with_a_different_topology(self):
         with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            codex_home = home / "codex-home"
-            repo = home / "repo"
+            codex_home = Path(temp) / "codex-home"
+            repo = Path(temp) / "repo"
             repo.mkdir()
-            legacy_path = home / controller.LEGACY_MANIFEST_RELATIVE
-            legacy_path.parent.mkdir(parents=True)
-            raw_legacy = legacy_manifest()
-            legacy_path.write_text(json.dumps(raw_legacy), encoding="utf-8")
-            old_manifest = controller._normalize_manifest(raw_legacy, legacy_path)
-            old_plan = make_plan(old_manifest, writer=True)
-            store = controller.RunStore(codex_home)
-            run_id = store.create(old_plan, {"head": "baseline"}, old_manifest, "existing-incomplete-run")
-            state, _ = store.load(run_id)
-            state["state"] = "needs_input"
-            state["status"] = "needs_input"
-            state["tasks"]["write-file"]["state"] = "needs_input"
-            state["tasks"]["write-file"]["status"] = "needs_input"
-            state["tasks"]["write-file"]["attempts"] = 1
-            store.save_state(run_id, state)
-
-            runner = controller.CodexRunner(invoke=lambda **_: self.fail("resume must not duplicate an interrupted writer"))
-            orchestrator = controller.Orchestrator(repo, codex_home, runner=runner)
-            with mock.patch.object(Path, "home", return_value=home):
-                result = orchestrator.resume(run_id)
-
-            self.assertEqual(orchestrator.manifest["package_id"], "astra-orchestrator")
-            self.assertEqual(result["run_id"], run_id)
-            self.assertEqual(result["state"], "needs_input")
-            self.assertTrue(result["needs_input"])
-            self.assertEqual(orchestrator.store.run_path(run_id).resolve(), (codex_home / "astra-orchestrator" / "runs" / run_id).resolve())
-
-    def test_partial_legacy_role_manifest_uses_frozen_defaults_for_resume(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            codex_home = home / "codex-home"
-            repo = home / "repo"
-            repo.mkdir()
-            legacy_path = home / controller.LEGACY_MANIFEST_RELATIVE
-            legacy_path.parent.mkdir(parents=True)
-            raw_legacy = legacy_manifest()
-            raw_legacy["roles"] = {"worker": {"sandbox_mode": "workspace-write"}}
-            legacy_path.write_text(json.dumps(raw_legacy), encoding="utf-8")
-            old_manifest = legacy_controller_manifest(raw_legacy, legacy_path)
-            old_plan = make_plan(old_manifest, writer=True)
-            store = controller.RunStore(codex_home)
-            run_id = store.create(old_plan, {"head": "baseline"}, old_manifest, "partial-legacy-run")
-            state, _ = store.load(run_id)
-            state["state"] = "needs_input"
-            state["status"] = "needs_input"
-            state["tasks"]["write-file"]["state"] = "needs_input"
-            state["tasks"]["write-file"]["status"] = "needs_input"
-            state["tasks"]["write-file"]["attempts"] = 1
-            store.save_state(run_id, state)
-
-            runner = controller.CodexRunner(invoke=lambda **_: self.fail("resume must not duplicate an interrupted writer"))
-            orchestrator = controller.Orchestrator(repo, codex_home, runner=runner)
-            with mock.patch.object(Path, "home", return_value=home):
-                result = orchestrator.resume(run_id)
-
-            self.assertEqual(result["state"], "needs_input")
-            self.assertEqual(orchestrator.manifest["roles"]["worker"]["reasoning_effort"], "max")
-            self.assertEqual(orchestrator.manifest["roles"]["reviewer"]["reasoning_effort"], "xhigh")
-
-    def test_run_with_unmatched_legacy_manifest_stops_as_stale(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            codex_home = home / "codex-home"
-            repo = home / "repo"
-            repo.mkdir()
-            legacy_path = home / controller.LEGACY_MANIFEST_RELATIVE
-            legacy_path.parent.mkdir(parents=True)
-            raw_legacy = legacy_manifest()
-            legacy_path.write_text(json.dumps(raw_legacy), encoding="utf-8")
-            old_manifest = controller._normalize_manifest(raw_legacy, legacy_path)
-            old_plan = make_plan(old_manifest, writer=True)
-            store = controller.RunStore(codex_home)
-            run_id = store.create(old_plan, {"head": "baseline"}, old_manifest, "changed-legacy-run")
-            state, _ = store.load(run_id)
-            state["state"] = "needs_input"
-            state["status"] = "needs_input"
-            state["tasks"]["write-file"]["state"] = "needs_input"
-            state["tasks"]["write-file"]["status"] = "needs_input"
-            store.save_state(run_id, state)
-            raw_legacy["package_version"] = "different-contract"
-            legacy_path.write_text(json.dumps(raw_legacy), encoding="utf-8")
-
             runner = controller.CodexRunner(invoke=lambda **_: self.fail("stale work must not be relaunched"))
             orchestrator = controller.Orchestrator(repo, codex_home, runner=runner)
-            with mock.patch.object(Path, "home", return_value=home):
-                result = orchestrator.resume(run_id)
+            plan = make_plan(orchestrator.manifest, writer=False)
+            run_id = orchestrator.store.create(plan, {"head": "baseline"}, orchestrator.manifest, "stale-topology-run")
+            state, _ = orchestrator.store.load(run_id)
+            state["manifest_hash"] = "0" * 64
+            orchestrator.store.save_state(run_id, state)
 
+            result = orchestrator.resume(run_id)
             self.assertEqual(result["state"], "needs_input")
             self.assertIn("manifest changed", result["error"])
+
+    def test_manifest_rejects_modified_or_missing_role_profiles(self):
+        bundled = SCRIPT_DIR.parent / "codex-native-orchestrator.json"
+        raw = json.loads(bundled.read_text())
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "manifest.json"
+            wrong = json.loads(json.dumps(raw))
+            wrong["roles"]["reviewer"]["model"] = "invalid-model"
+            with self.assertRaises(controller.ValidationError):
+                controller._normalize_manifest(wrong, path)
+            missing = json.loads(json.dumps(raw))
+            del missing["roles"]["guardian"]
+            with self.assertRaises(controller.ValidationError):
+                controller._normalize_manifest(missing, path)
+            wrong_config = json.loads(json.dumps(raw))
+            wrong_config["config_values"]["model"] = "invalid-model"
+            with self.assertRaises(controller.ValidationError):
+                controller._normalize_manifest(wrong_config, path)
+
+    def test_final_guardian_plan_requires_independent_post_writer_tester(self):
+        manifest = controller.load_manifest(Path.cwd())
+        writer = {"task_id": "change", "role": "worker", "objective": "Change runtime behavior", "owned_paths": ["src"]}
+        plan = {"plan_id": "verify-change", "objective": "Change and verify behavior", "gate_mode": "final", "tasks": [writer]}
+        with self.assertRaisesRegex(controller.ValidationError, "read-only tester downstream"):
+            controller.validate_plan(plan, manifest=manifest)
+        ordinary = dict(plan, gate_mode="none")
+        controller.validate_plan(ordinary, manifest=manifest)
+        plan["tasks"].append({
+            "task_id": "verify", "role": "tester", "objective": "Verify changed behavior",
+            "depends_on": ["change"], "read_only": True, "writes": False,
+        })
+        normalized = controller.validate_plan(plan, manifest=manifest)
+        self.assertEqual(normalized["topological_order"], ["change", "verify"])
+
+    def test_installed_root_drift_blocks_dispatch(self):
+        manifest = controller.load_manifest(Path.cwd())
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            repo = root / "repo"
+            repo.mkdir()
+            codex_home = root / "codex-home"
+            agents = codex_home / "agents"
+            agents.mkdir(parents=True)
+            for role in ("explorer", "worker", "tester", "researcher", "reviewer", "guardian"):
+                (agents / (role + ".toml")).write_bytes((SCRIPT_DIR.parent / "roles" / (role + ".toml")).read_bytes())
+            values = manifest["config_values"]
+            config = '\n'.join('%s = %s' % (key, json.dumps(values[key])) for key in ("model", "model_reasoning_effort"))
+            config += '\n[agents]\n'
+            config += '\n'.join('%s = %s' % (key.removeprefix("agents."), json.dumps(value)) for key, value in values.items() if key.startswith("agents."))
+            config_path = codex_home / "config.toml"
+            config_path.write_text(config + '\n')
+            orchestrator = controller.Orchestrator(repo, codex_home)
+            with mock.patch.object(controller, "validate_codex_config_bytes", return_value={"ok": True}):
+                orchestrator._require_installed_topology()
+                home_skill = root / ".agents" / "skills" / "codex-native-orchestrator" / "SKILL.md"
+                home_skill.parent.mkdir(parents=True)
+                home_skill.write_text("global alias")
+                with mock.patch.object(Path, "home", return_value=root):
+                    orchestrator._require_installed_topology()
+                home_skill.unlink()
+                project_config = repo / ".codex" / "config.toml"
+                project_config.parent.mkdir()
+                project_config.write_text('model = "invalid-model"\n')
+                with self.assertRaisesRegex(controller.ValidationError, "project_overrides"):
+                    orchestrator._require_installed_topology()
+                project_config.unlink()
+                config_path.write_text((config + '\n').replace('model = "gpt-6-astra"', 'model = "invalid-model"'))
+                with self.assertRaisesRegex(controller.ValidationError, "config"):
+                    orchestrator._require_installed_topology()
+
+    def test_non_guardian_review_packet_allows_unneeded_tester(self):
+        manifest = controller.load_manifest(Path.cwd())
+        plan = controller.validate_plan({
+            "plan_id": "docs-change", "objective": "Edit documentation", "gate_mode": "none",
+            "tasks": [{"task_id": "edit", "role": "worker", "objective": "Edit documentation", "owned_paths": ["docs"]}],
+        }, manifest=manifest)
+        packet = controller.build_gate_packet(plan, {"test_evidence": "not applicable"}, mode="final")
+        self.assertEqual(packet["Test evidence"], "not applicable")
+
+    def test_runner_rejects_writable_tester(self):
+        manifest = controller.load_manifest(Path.cwd())
+        plan = {
+            "plan_id": "writable-test", "objective": "Verify behavior",
+            "tasks": [{"task_id": "test", "role": "tester", "objective": "Run tests that write output", "owned_paths": ["tmp"], "read_only": False, "writes": True}],
+        }
+        with self.assertRaisesRegex(controller.ValidationError, "use native dispatch"):
+            controller.validate_plan(plan, manifest=manifest)
+
+    def test_known_observed_model_mismatch_is_rejected(self):
+        runner = controller.CodexRunner(invoke=lambda **_: {"observed_runtime": {"model": "invalid-model"}})
+        with self.assertRaisesRegex(controller.ValidationError, "fixed value"):
+            runner.invoke("review", role="reviewer", read_only=True, cwd=Path.cwd(), max_attempts=1)
+
+    def test_unavailable_guardian_does_not_substitute_reviewer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runner = controller.CodexRunner(invoke=lambda **_: self.fail("unexpected substitute role"))
+            orchestrator = controller.Orchestrator(Path(temp), Path(temp) / "codex-home", runner=runner)
+            state = {"run_id": "run-test", "state": "needs_input", "gate": {"status": "unavailable"}}
+            with mock.patch.object(orchestrator.store, "save_state"):
+                self.assertFalse(orchestrator._consume_guardian(state, {"gate_mode": "final"}))
+            self.assertIn("explicit waiver", state["error"])
 
     def test_codex_events_report_provider_when_exposed(self):
         events = "\n".join(
             json.dumps(item)
             for item in (
-                {"type": "turn.started", "provider": "openai-compatible", "model": "gpt-6-luna", "reasoning_effort": "high"},
+                {"type": "turn.started", "provider": "openai-compatible", "model": "gpt-6-luna", "reasoning_effort": "max"},
                 {"type": "turn.completed", "output": "done"},
             )
         )
