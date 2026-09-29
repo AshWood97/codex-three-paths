@@ -18,16 +18,15 @@ Use this skill for repository tasks where independent exploration, implementatio
 
 | Role | Model | Effort | Sandbox |
 | --- | --- | --- | --- |
-| Root | `gpt-6-astra` | `medium` | Session default |
 | Explorer, worker | `gpt-6-luna` | `max` | Role profile |
 | Tester | `gpt-6-sol` | `xhigh` | Role profile |
 | Researcher | `gpt-6-astra` | `medium` | Read-only |
 | Reviewer | `gpt-6-sol` | `xhigh` | Read-only |
 | Guardian | `gpt-6-astra` | `medium` | Controller-isolated, explicit gate |
 
-The global root setting is `gpt-6-astra` at `medium`. A running session may retain a model selected before this configuration was installed; report such runtime uncertainty instead of claiming that the file changed the live session. The role TOMLs are installed profiles for `CODEX_HOME/agents`; they do not create agents. Use native agent tools to launch the named roles and wait for required results. Existing children retain their original settings.
+The root uses the model selected by the current session or user configuration. This skill does not set or validate the global root model. The role TOMLs are installed profiles for `CODEX_HOME/agents`; they do not create agents. Use native agent tools to launch the named roles and wait for required results. Existing children retain their original settings.
 
-The manifest and controller fix these assignments. Do not raise, lower, inherit, or silently fall back to another model or effort. If the manifest, controller, installed role profile, or global root setting disagrees, stop dispatch and repair the configuration before starting new work. A requested model is still not proof of observed runtime.
+The manifest and controller fix the named subagent assignments. Do not raise, lower, inherit, or silently fall back to another model or effort for those roles. If the manifest, controller, or installed role profile disagrees, stop dispatch and repair the configuration before starting new work. A requested model is still not proof of observed runtime.
 
 ## Persistent runner
 
@@ -48,4 +47,4 @@ Every delegated task has one objective, bounded scope, explicit non-goals, owned
 
 Requested model, effort, and sandbox settings are not proof of observed runtime. Report unobservable values as `unknown`. Keep structured evidence for the run ID, role and requested model, observed provider and model when available, status, changed paths, checks, and uncertainties. Never silently launch a duplicate writer after an interrupted run. Existing run state is authoritative; reconcile journal evidence on resume and rerun conclusions made stale by changed dependencies or tool versions.
 
-Do not create project-level model pins. Check the fixed topology before dispatch. A saved run with an older topology must stop as stale; preserve its evidence and replan new work under the current roles.
+Do not create project-level model pins. Check the fixed subagent topology before dispatch. A saved run with an older topology must stop as stale; preserve its evidence and replan new work under the current roles.

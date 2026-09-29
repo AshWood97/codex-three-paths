@@ -39,8 +39,8 @@ DEFAULT_CODEX_HOME = Path.home() / ".codex"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DEPLOYMENT_ID_RE = re.compile(r"^deployment-[0-9a-f]{16}$")
-ROLE_NAMES = {"root", "explorer", "worker", "tester", "researcher", "reviewer", "guardian"}
-TASK_ROLE_NAMES = ROLE_NAMES - {"root"}
+ROLE_NAMES = {"explorer", "worker", "tester", "researcher", "reviewer", "guardian"}
+TASK_ROLE_NAMES = ROLE_NAMES
 RUNNER_TASK_ROLE_NAMES = TASK_ROLE_NAMES - {"guardian"}
 READ_ONLY_ROLES = {"explorer", "researcher", "reviewer", "guardian"}
 WRITER_ROLES = {"worker", "tester"}
@@ -48,7 +48,6 @@ GATE_MODES = {"none", "pre", "final"}
 MAX_CONCURRENCY = 4
 
 DEFAULT_ROLE_SPECS: Dict[str, Dict[str, Any]] = {
-    "root": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": False},
     "explorer": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": True},
     "worker": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": False},
     "tester": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": False},
@@ -325,8 +324,6 @@ def _normalize_manifest(
     if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool) or max_concurrency < 1 or max_concurrency > MAX_CONCURRENCY:
         raise ValidationError("manifest max_concurrency must be an integer from 1 to %d" % MAX_CONCURRENCY)
     fixed_config = {
-        "model": DEFAULT_ROLE_SPECS["root"]["model"],
-        "model_reasoning_effort": DEFAULT_ROLE_SPECS["root"]["reasoning_effort"],
         "agents.enabled": True,
         "agents.max_concurrent_threads_per_session": max_concurrency,
         "agents.default_subagent_model": DEFAULT_ROLE_SPECS["worker"]["model"],
@@ -334,6 +331,11 @@ def _normalize_manifest(
     }
     if raw.get("config_values") != fixed_config or set(raw.get("managed_config_keys", [])) != set(fixed_config):
         raise ValidationError("manifest managed config differs from the fixed topology")
+    if any(key in raw for key in ("config", "codex_config", "allowed_config_keys")):
+        raise ValidationError("manifest config aliases are not allowed")
+    deployment = raw.get("deployment", {})
+    if isinstance(deployment, Mapping) and any(key in deployment for key in ("config", "config_values", "values", "allowed_config_keys", "managed_config_keys")):
+        raise ValidationError("deployment config aliases are not allowed")
     result = dict(raw)
     result["roles"] = json.loads(json.dumps(roles))
     result["max_concurrency"] = max_concurrency
@@ -3327,6 +3329,8 @@ def _toml_scalar(value: Any) -> str:
 
 
 def config_values_from_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    if manifest.get("package_id") == "codex-native-orchestrator" and manifest.get("installation_scope") == "global":
+        return dict(manifest["config_values"])
     deployment = manifest.get("deployment", {})
     candidates = []
     for key in ("config", "config_values", "codex_config"):
@@ -3347,12 +3351,9 @@ def config_values_from_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
         for key, value in candidate.items():
             visit(str(key), value)
     if not result:
-        root = manifest.get("roles", {})
-        root_spec = root.get("root", {}) if isinstance(root, Mapping) else {}
-        worker_spec = root.get("worker", {}) if isinstance(root, Mapping) else {}
+        roles = manifest.get("roles", {})
+        worker_spec = roles.get("worker", {}) if isinstance(roles, Mapping) else {}
         result = {
-            "model": root_spec.get("model", DEFAULT_ROLE_SPECS["root"]["model"]),
-            "model_reasoning_effort": root_spec.get("reasoning_effort", DEFAULT_ROLE_SPECS["root"]["reasoning_effort"]),
             "agents.enabled": True,
             "agents.max_concurrent_threads_per_session": manifest.get("max_concurrency", 4),
             "agents.default_subagent_model": worker_spec.get("model", DEFAULT_ROLE_SPECS["worker"]["model"]),
@@ -3953,13 +3954,13 @@ def _managed_tree_fingerprint(source_root: Path, target_root: Path) -> Optional[
 def _agent_file_spec(path: Path) -> Dict[str, str]:
     if not path.is_file():
         return {}
-    text = path.read_text(encoding="utf-8")
-    result = {}
-    for field in ("model", "model_reasoning_effort", "sandbox_mode"):
-        match = re.search(r"^%s\s*=\s*\"([^\"]+)\"\s*$" % re.escape(field), text, re.MULTILINE)
-        if match:
-            result[field] = match.group(1)
-    return result
+    fields = ("model", "model_reasoning_effort", "sandbox_mode")
+    try:
+        observed = _collect_managed_toml_scalars(path.read_text(encoding="utf-8"), fields)
+        result = {field: json.loads(value) for field, value in observed.items()}
+    except (DeploymentError, UnicodeError, ValueError):
+        return {}
+    return {field: value for field, value in result.items() if isinstance(value, str)}
 
 
 def global_doctor(repo: Path, codex_home: Path, manifest: Mapping[str, Any]) -> Dict[str, Any]:
@@ -4052,17 +4053,6 @@ def doctor(repo: Path, codex_home: Path) -> Dict[str, Any]:
         source_roles[name] = {"ok": ok, "path": str(path), "expected": expected_file, "actual": actual}
         if not ok:
             role_drift.append(name)
-    root_config = repo / ".codex" / "config.toml"
-    root_text = root_config.read_text(encoding="utf-8") if root_config.is_file() else ""
-    root_actual = {}
-    for field in ("model", "model_reasoning_effort"):
-        match = re.search(r"^%s\s*=\s*\"([^\"]+)\"\s*$" % field, root_text, re.MULTILINE)
-        if match:
-            root_actual[field] = match.group(1)
-    root_expected = {"model": topology.get("root", {}).get("model"), "model_reasoning_effort": topology.get("root", {}).get("reasoning_effort")}
-    source_roles["root"] = {"ok": root_actual == root_expected, "path": str(root_config), "expected": root_expected, "actual": root_actual}
-    if root_actual != root_expected:
-        role_drift.append("root")
     checks["source_roles"] = {"ok": not role_drift, "roles": source_roles, "drift": role_drift}
     codex_bin = shutil.which("codex")
     codex_check: Dict[str, Any] = {"ok": codex_bin is not None, "path": codex_bin}

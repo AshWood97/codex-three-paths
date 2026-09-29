@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "package_version": "2.5.0",
+  "package_version": "2.5.1",
   "package_id": "codex-native-orchestrator",
   "skill": {
     "entry": ".agents/skills/codex-native-orchestrator/SKILL.md",
@@ -13,7 +13,6 @@
     ]
   },
   "roles": {
-    "root": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "workspace-write" },
     "explorer": { "model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "read-only" },
     "worker": { "model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "workspace-write" },
     "tester": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "workspace-write" },
@@ -50,16 +49,12 @@
   },
   "timeouts": { "read_only": 1800, "writer": 3600, "guardian": 900 },
   "managed_config_keys": [
-    "model",
-    "model_reasoning_effort",
     "agents.enabled",
     "agents.max_concurrent_threads_per_session",
     "agents.default_subagent_model",
     "agents.default_subagent_reasoning_effort"
   ],
   "config_values": {
-    "model": "gpt-6-astra",
-    "model_reasoning_effort": "medium",
     "agents.enabled": true,
     "agents.max_concurrent_threads_per_session": 4,
     "agents.default_subagent_model": "gpt-6-luna",

@@ -1,9 +1,10 @@
 # Routing
 
-The installed manifest declares the fixed topology, runner defaults, paths,
-timeouts, and managed configuration keys. The controller rejects a manifest
-whose role model, effort, or sandbox differs from the fixed assignments. Check
-the installed role files and global root setting before native dispatch.
+The installed manifest declares the fixed subagent topology, runner defaults,
+paths, timeouts, and managed configuration keys. The controller rejects a
+manifest whose subagent model, effort, or sandbox differs from the fixed
+assignments. Check the installed role files before native dispatch. The root
+uses the current session's model.
 
 ## Default route
 

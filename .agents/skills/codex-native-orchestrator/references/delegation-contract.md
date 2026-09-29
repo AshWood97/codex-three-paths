@@ -34,12 +34,12 @@ The five routine subagent roles are fixed; the guardian is controller-only:
 | `researcher` | GPT-6 Astra / medium | verify current or versioned facts | no |
 | `guardian` | GPT-6 Astra / medium | explicitly requested controller gate | no |
 
-The global Root and all named roles have fixed model and effort assignments.
-The manifest, controller, installed role files, and global root setting must
-agree before new work is dispatched. Existing sessions may retain previously
-selected models; record what can be observed and do not claim that a file
-change switched a live session. Do not override a role model or effort per
-task. A missing role is a dispatch error, not permission to substitute one.
+The root uses the current session's model. Named subagent roles have fixed
+model and effort assignments. The manifest, controller, and installed role
+files must agree before new work is dispatched. Record what can be observed
+and do not claim that a file change switched a live session. Do not override
+a named role model or effort per task. A missing role is a dispatch error,
+not permission to substitute one.
 
 The root owns the plan but is not a plan node. Persistent-runner task nodes may
 use the five ordinary roles in the table above; `guardian` is invoked only by

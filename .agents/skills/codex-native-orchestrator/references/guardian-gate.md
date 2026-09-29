@@ -3,7 +3,7 @@
 The plan records `gate_mode` as exactly `pre`, `final`, or `none` and records
 whether the risk is `hard_risk`. Risk classification is independent from
 guardian authorization: `hard_risk` may be true with `gate_mode=none` when the
-user has not requested an extra gate. The root Astra already performs ordinary
+user has not requested an extra gate. The root already performs ordinary
 planning and risk analysis. The default is `none`; the guardian is an explicit
 opt-in compatibility mechanism, not an automatic second opinion.
 The Astra budget is exactly zero or one logical gate per task.
