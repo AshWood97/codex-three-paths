@@ -36,7 +36,9 @@ class NativePackageTests(unittest.TestCase):
     def test_manifest_profiles_use_configured_efforts(self):
         manifest = controller.load_manifest(Path.cwd())
         self.assertEqual(manifest["package_id"], "codex-native-orchestrator")
-        self.assertEqual(manifest["roles"]["root"]["reasoning_effort"], "medium")
+        self.assertNotIn("root", manifest["roles"])
+        self.assertNotIn("model", manifest["managed_config_keys"])
+        self.assertNotIn("model_reasoning_effort", manifest["managed_config_keys"])
         for role in ("explorer", "worker"):
             self.assertEqual(manifest["roles"][role]["model"], "gpt-6-luna")
             self.assertEqual(manifest["roles"][role]["reasoning_effort"], "max")
@@ -131,6 +133,37 @@ class NativePackageTests(unittest.TestCase):
             wrong_config["config_values"]["model"] = "invalid-model"
             with self.assertRaises(controller.ValidationError):
                 controller._normalize_manifest(wrong_config, path)
+            for extra in (
+                {"config": {"model": "gpt-6-astra"}},
+                {"allowed_config_keys": [*raw["managed_config_keys"], "model"]},
+                {"deployment": {**raw["deployment"], "values": {"model": "gpt-6-astra"}}},
+            ):
+                with self.subTest(extra=extra):
+                    injected = json.loads(json.dumps(raw))
+                    injected.update(extra)
+                    with self.assertRaisesRegex(controller.ValidationError, "config aliases"):
+                        controller._normalize_manifest(injected, path)
+
+    def test_deployment_patch_preserves_selected_root_model(self):
+        manifest = controller.load_manifest(Path.cwd())
+        original = b'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n[agents]\nenabled = false\n'
+        patched, _ = controller.patch_toml_bytes(
+            original, manifest["config_values"], allowed_keys=manifest["managed_config_keys"]
+        )
+        self.assertIn(b'model = "gpt-6-sol"\n', patched)
+        self.assertIn(b'model_reasoning_effort = "high"\n', patched)
+        self.assertIn(b'enabled = true\n', patched)
+        self.assertNotIn(b'model = "gpt-6-astra"', patched)
+
+    def test_role_scanner_ignores_model_text_inside_multiline_instructions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            role_file = Path(temp) / "explorer.toml"
+            role_file.write_text('developer_instructions = """\nmodel = "gpt-6-luna"\nmodel_reasoning_effort = "max"\nsandbox_mode = "read-only"\n"""\n')
+            self.assertEqual(controller._agent_file_spec(role_file), {})
+            role_file.write_text('model = "gpt-6-luna"\nmodel_reasoning_effort = "max"\nsandbox_mode = "read-only"\ndeveloper_instructions = """\nmodel = "wrong"\n"""\n')
+            self.assertEqual(controller._agent_file_spec(role_file), {
+                "model": "gpt-6-luna", "model_reasoning_effort": "max", "sandbox_mode": "read-only"
+            })
 
     def test_final_guardian_plan_requires_independent_post_writer_tester(self):
         manifest = controller.load_manifest(Path.cwd())
@@ -147,7 +180,7 @@ class NativePackageTests(unittest.TestCase):
         normalized = controller.validate_plan(plan, manifest=manifest)
         self.assertEqual(normalized["topological_order"], ["change", "verify"])
 
-    def test_installed_root_drift_blocks_dispatch(self):
+    def test_installed_root_choice_is_allowed_but_role_drift_blocks_dispatch(self):
         manifest = controller.load_manifest(Path.cwd())
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -159,8 +192,7 @@ class NativePackageTests(unittest.TestCase):
             for role in ("explorer", "worker", "tester", "researcher", "reviewer", "guardian"):
                 (agents / (role + ".toml")).write_bytes((SCRIPT_DIR.parent / "roles" / (role + ".toml")).read_bytes())
             values = manifest["config_values"]
-            config = '\n'.join('%s = %s' % (key, json.dumps(values[key])) for key in ("model", "model_reasoning_effort"))
-            config += '\n[agents]\n'
+            config = 'model = "gpt-6-sol"\nmodel_reasoning_effort = "medium"\n[agents]\n'
             config += '\n'.join('%s = %s' % (key.removeprefix("agents."), json.dumps(value)) for key, value in values.items() if key.startswith("agents."))
             config_path = codex_home / "config.toml"
             config_path.write_text(config + '\n')
@@ -175,12 +207,17 @@ class NativePackageTests(unittest.TestCase):
                 home_skill.unlink()
                 project_config = repo / ".codex" / "config.toml"
                 project_config.parent.mkdir()
-                project_config.write_text('model = "invalid-model"\n')
+                project_config.write_text('model = "gpt-6-luna"\n')
+                orchestrator._require_installed_topology()
+                project_config.write_text('[agents]\ndefault_subagent_model = "gpt-6-sol"\n')
                 with self.assertRaisesRegex(controller.ValidationError, "project_overrides"):
                     orchestrator._require_installed_topology()
                 project_config.unlink()
-                config_path.write_text((config + '\n').replace('model = "gpt-6-astra"', 'model = "invalid-model"'))
-                with self.assertRaisesRegex(controller.ValidationError, "config"):
+                config_path.write_text((config + '\n').replace('model = "gpt-6-sol"', 'model = "gpt-6-luna"'))
+                orchestrator._require_installed_topology()
+                explorer_path = agents / "explorer.toml"
+                explorer_path.write_text(explorer_path.read_text().replace('model = "gpt-6-luna"', 'model = "gpt-6-sol"'))
+                with self.assertRaisesRegex(controller.ValidationError, "roles"):
                     orchestrator._require_installed_topology()
 
     def test_non_guardian_review_packet_allows_unneeded_tester(self):

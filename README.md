@@ -31,20 +31,19 @@ Native agents · External providers · Harness delegation
 
 安装器将三个目录分别放入 `$CODEX_HOME/skills/`（默认 `~/.codex/skills/`）。在下一轮对话中，从技能菜单选一个即可；也可以明确写 `$codex-native-orchestrator`、`$codex-external-provider` 或 `$codex-harness-bridge`。如已有同名 skill，先检查现有安装，避免覆盖个人改动。
 
-建议使用 Python 3.11 或更新版本；External 的预检及测试要求至少 3.11。Native 的 skill 安装和命名 agent 配置是两步：安装器只安装 skill；按下方说明部署固定角色和全局 Root 设置后，再启动新会话。External 的 provider、模型目录和凭据只放在个人配置及环境变量中，参照[示例](.agents/skills/codex-external-provider/examples/user-config.example.toml)和[设置说明](.agents/skills/codex-external-provider/references/provider-setup.md)。Harness Bridge 的私有配置从[示例](.agents/skills/codex-harness-bridge/config.example.json)创建，参照[设置说明](.agents/skills/codex-harness-bridge/references/setup.md)；仅安装要用的 CLI。
+建议使用 Python 3.11 或更新版本；External 的预检及测试要求至少 3.11。Native 的 skill 安装和命名 agent 配置是两步：安装器只安装 skill；按下方说明部署固定子代理角色后，再启动新会话。Root 使用当前会话或用户选择的模型。External 的 provider、模型目录和凭据只放在个人配置及环境变量中，参照[示例](.agents/skills/codex-external-provider/examples/user-config.example.toml)和[设置说明](.agents/skills/codex-external-provider/references/provider-setup.md)。Harness Bridge 的私有配置从[示例](.agents/skills/codex-harness-bridge/config.example.json)创建，参照[设置说明](.agents/skills/codex-harness-bridge/references/setup.md)；仅安装要用的 CLI。
 
 #### Native 固定编排与部署
 
 | 角色 | 模型 | 推理强度 |
 | --- | --- | --- |
-| Root | `gpt-6-astra` | `medium` |
 | Explorer、Worker | `gpt-6-luna` | `max` |
 | Tester、Reviewer | `gpt-6-sol` | `xhigh` |
 | Researcher、Guardian | `gpt-6-astra` | `medium` |
 
 Guardian 仅在明确请求额外关卡时启动。需要写入产物的测试走原生 Tester 派遣；持久运行器只接受只读 Tester 节点。模型或配置不符时停止派遣，不会自动替换角色。
 
-把本仓库 `.agents/skills/codex-native-orchestrator/roles/*.toml` 的六个配置放入个人 `CODEX_HOME/agents`，并将清单中的 `config_values` 合并到个人 `CODEX_HOME/config.toml`。不要覆盖配置文件中的其他设置或追加重复的 TOML 键。从本仓库检出目录运行检查命令；已运行的会话和 agent 不会自动切换模型。
+把本仓库 `.agents/skills/codex-native-orchestrator/roles/*.toml` 的六个配置放入个人 `CODEX_HOME/agents`，并将清单中的 `config_values` 合并到个人 `CODEX_HOME/config.toml`。这些值仅配置子代理，不包含全局 `model` 或 `model_reasoning_effort`。不要覆盖配置文件中的其他设置或追加重复的 TOML 键。从本仓库检出目录运行检查命令；已运行的会话和 agent 不会自动切换模型。
 
 ```sh
 python3 .agents/skills/codex-native-orchestrator/scripts/codex_native_orchestrator.py --repo "$PWD" doctor
@@ -88,20 +87,19 @@ Paths: .agents/skills/codex-native-orchestrator
 
 The installer places each directory in `$CODEX_HOME/skills/` (default `~/.codex/skills/`). On the next turn, select one from the skill picker, or invoke `$codex-native-orchestrator`, `$codex-external-provider`, or `$codex-harness-bridge` directly. Inspect any existing skill with the same name before updating it so local changes are preserved.
 
-Python 3.11 or newer is recommended; External preflight and tests require at least 3.11. Installing the Native skill and configuring named agents are separate steps: the installer adds the skill, while the deployment below installs the fixed roles and global Root settings. Start a new session after deployment. Keep External provider settings, model catalogs, and credentials in user configuration and environment variables, using the [example](.agents/skills/codex-external-provider/examples/user-config.example.toml) and [setup guide](.agents/skills/codex-external-provider/references/provider-setup.md). Create a private Harness Bridge configuration from its [example](.agents/skills/codex-harness-bridge/config.example.json) and [setup guide](.agents/skills/codex-harness-bridge/references/setup.md); install only the CLIs you plan to use.
+Python 3.11 or newer is recommended; External preflight and tests require at least 3.11. Installing the Native skill and configuring named agents are separate steps: the installer adds the skill, while the deployment below installs the fixed subagent roles. Root uses the model selected by the current session or user configuration. Start a new session after deployment. Keep External provider settings, model catalogs, and credentials in user configuration and environment variables, using the [example](.agents/skills/codex-external-provider/examples/user-config.example.toml) and [setup guide](.agents/skills/codex-external-provider/references/provider-setup.md). Create a private Harness Bridge configuration from its [example](.agents/skills/codex-harness-bridge/config.example.json) and [setup guide](.agents/skills/codex-harness-bridge/references/setup.md); install only the CLIs you plan to use.
 
 #### Native fixed roles and deployment
 
 | Role | Model | Reasoning effort |
 | --- | --- | --- |
-| Root | `gpt-6-astra` | `medium` |
 | Explorer, Worker | `gpt-6-luna` | `max` |
 | Tester, Reviewer | `gpt-6-sol` | `xhigh` |
 | Researcher, Guardian | `gpt-6-astra` | `medium` |
 
 Guardian runs only when an extra gate is explicitly requested. Tests that write output use native Tester dispatch; persistent runner Tester nodes must be read-only. Configuration drift stops dispatch instead of substituting a role.
 
-Place the six `.agents/skills/codex-native-orchestrator/roles/*.toml` profiles in your personal `CODEX_HOME/agents`, and merge the manifest's `config_values` into your personal `CODEX_HOME/config.toml`. Preserve unrelated settings and avoid duplicate TOML keys. Run the check from this repository checkout. Running sessions and agents do not switch models automatically.
+Place the six `.agents/skills/codex-native-orchestrator/roles/*.toml` profiles in your personal `CODEX_HOME/agents`, and merge the manifest's `config_values` into your personal `CODEX_HOME/config.toml`. These values configure subagents only; they do not include the global `model` or `model_reasoning_effort`. Preserve unrelated settings and avoid duplicate TOML keys. Run the check from this repository checkout. Running sessions and agents do not switch models automatically.
 
 ```sh
 python3 .agents/skills/codex-native-orchestrator/scripts/codex_native_orchestrator.py --repo "$PWD" doctor
