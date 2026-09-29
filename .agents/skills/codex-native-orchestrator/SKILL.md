@@ -24,7 +24,7 @@ Use this skill for repository tasks where independent exploration, implementatio
 | Reviewer | `gpt-6-sol` | `xhigh` | Read-only |
 | Guardian | `gpt-6-astra` | `medium` | Controller-isolated, explicit gate |
 
-The root uses the model selected by the current session or user configuration. This skill does not set or validate the global root model. The role TOMLs are installed profiles for `CODEX_HOME/agents`; they do not create agents. Use native agent tools to launch the named roles and wait for required results. Existing children retain their original settings.
+The current Codex session coordinates the work and is not one of this skill's named roles. Its model remains whatever the user or session selected; invoking this skill does not change or validate it. The role TOMLs are installed profiles for `CODEX_HOME/agents`; they do not create agents. Use native agent tools to launch the named roles and wait for required results. Existing children retain their original settings.
 
 The manifest and controller fix the named subagent assignments. Do not raise, lower, inherit, or silently fall back to another model or effort for those roles. If the manifest, controller, or installed role profile disagrees, stop dispatch and repair the configuration before starting new work. A requested model is still not proof of observed runtime.
 
