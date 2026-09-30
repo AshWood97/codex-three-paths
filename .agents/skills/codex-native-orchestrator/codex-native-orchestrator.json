@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "package_version": "2.5.1",
+  "package_version": "2.6.0",
   "package_id": "codex-native-orchestrator",
   "skill": {
     "entry": ".agents/skills/codex-native-orchestrator/SKILL.md",
@@ -13,15 +13,17 @@
     ]
   },
   "roles": {
+    "conductor": { "model": "gpt-6.1-sol", "reasoning_effort": "max", "sandbox_mode": "read-only", "automatic": true, "requires_explicit_request": false },
     "explorer": { "model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "read-only" },
     "worker": { "model": "gpt-6-luna", "reasoning_effort": "max", "sandbox_mode": "workspace-write" },
-    "tester": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "workspace-write" },
-    "reviewer": { "model": "gpt-6-sol", "reasoning_effort": "xhigh", "sandbox_mode": "read-only" },
-    "researcher": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "read-only" },
-    "guardian": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "read-only", "automatic": false, "requires_explicit_request": true }
+    "tester": { "model": "gpt-6.1-sol", "reasoning_effort": "high", "sandbox_mode": "workspace-write" },
+    "reviewer": { "model": "gpt-6.1-sol", "reasoning_effort": "max", "sandbox_mode": "read-only" },
+    "researcher": { "model": "gpt-6.1-sol", "reasoning_effort": "high", "sandbox_mode": "read-only" },
+    "guardian": { "model": "gpt-6-astra", "reasoning_effort": "medium", "sandbox_mode": "read-only", "automatic": true, "requires_explicit_request": false }
   },
   "max_concurrency": 4,
   "runner_defaults": {
+    "gate_mode": "final",
     "mode": "hybrid",
     "decision": "auto",
     "max_agents": 4,

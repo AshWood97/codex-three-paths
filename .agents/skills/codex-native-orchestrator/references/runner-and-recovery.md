@@ -1,17 +1,25 @@
 # Runner and recovery
 
-The hybrid runner is an opt-in coordination mode selected by the routing
-triggers and user overrides. Its defaults are in the manifest. It schedules
-plan nodes in dependency waves, favors the critical path, and never creates
-work solely to fill the four-thread concurrency cap.
+The hybrid runner is a coordination mode selected from user controls, routing
+triggers, and the host's tentative task structure. Its defaults are in the
+manifest. After the host chooses the execution mode, the runner starts one
+mandatory Conductor startup phase to independently assess the tentative plan.
+It then schedules ordinary plan nodes in dependency waves, favors the critical
+path, and never creates work solely to fill the four-thread concurrency cap.
+Resume only from the saved state for the selected mode; do not carry startup
+records across native and runner modes. If Conductor planning returns
+`needs_input` or `failed`, do not schedule ordinary work until the issue is
+resolved.
 
 ## Plan and state
 
-Each plan declares `gate_mode` (`pre`, `final`, or `none`) and a boolean
-`hard_risk`. The root owns the plan and is not a plan node; ordinary task nodes
-use only `explorer`, `worker`, `tester`, `researcher`, or `reviewer`. Guardian
-remains a public named role for native compatibility, but the persistent runner
-reserves it for the single controller-owned `gate_mode` invocation.
+Each new plan uses `gate_mode=final` (also the omitted-field default) and a boolean
+`hard_risk`. The host session executes the agreed plan and is not a plan node;
+ordinary task nodes use only `explorer`, `worker`, `tester`, `researcher`, or
+`reviewer`. Conductor is a controller-managed startup phase, not a plan node.
+Guardian remains a public named role for native compatibility, but the
+persistent runner reserves it for the single controller-owned `gate_mode`
+invocation.
 Each plan node declares `task_id`, `role`, `depends_on`, `owned_paths`,
 `prompt`, `read_only`, and `writes`. Normalized execution nodes additionally
 carry `objective`, `scope`, `non_goals`, `acceptance_criteria`, `write_mode`,
@@ -25,8 +33,7 @@ Runner Tester nodes must use read-only checks. A `writes=true` Tester node is
 integrated as a delivery writer. For required tests that generate output,
 choose native dispatch so Tester evidence precedes Reviewer. If the user
 explicitly requires this runner, stop and report the unsupported verification
-path. Do not request a final Guardian gate when its read-only Tester evidence
-cannot be produced.
+path. The final Guardian gate remains required when using native dispatch.
 
 Durable runs live below the manifest's `run_state_root` and contain the plan,
 state, a JSONL event journal, per-node structured inputs/results/evidence, and
@@ -74,10 +81,11 @@ blocked until the user commits or cleans it. Ambiguous or uncommitted writer
 worktrees are preserved for inspection; the runner must not use broad
 destructive Git cleanup.
 
-The `pre` gate runs before any writer only when explicitly requested. The
-`final` gate runs only after integration tests and the Sol reviewer pass.
-`none` is the default and runs no guardian process; all three plan values
-still allow at most one logical Astra gate when a user explicitly opts in.
+The automatic `final` gate runs after successful verification and the GPT-6.1
+Sol Reviewer pass for every task, including runs without writers. One logical
+Astra gate is allowed per task. New plans cannot use `pre` or `none`; old run
+records retain their original evidence and are stopped as stale after the
+manifest changes, rather than silently resumed under the new policy.
 
 ## Timeouts, retry, and resume
 
@@ -86,6 +94,14 @@ and the guardian 900. A timeout preserves state for resume. A failed read-only
 node may be retried once with the same structured input packet. Once a writer
 has started, do not create a duplicate writer thread: resume the original
 thread or move the node to `needs_input` while retaining its worktree.
+
+Codex child processes inherit explicit proxy environment settings. On macOS,
+enabled system HTTP or HTTPS proxies fill only proxy variables that are absent
+from the environment; an explicitly empty variable is preserved. Invocation
+stdout and stderr are retained with mode `0600` under the private
+`astra-orchestrator/invocations` directory below `CODEX_HOME`, including partial output after a
+timeout. State and error records expose the transcript paths without copying
+the transcript contents into the journal.
 
 On restart, acquire the run lock and validate the saved plan, `state.json`,
 and complete journal records. `state.json` remains authoritative; resume

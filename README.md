@@ -37,17 +37,21 @@ Native agents · External providers · Harness delegation
 
 | 角色 | 模型 | 推理强度 |
 | --- | --- | --- |
+| Conductor | `gpt-6.1-sol` | `max` |
 | Explorer、Worker | `gpt-6-luna` | `max` |
-| Tester、Reviewer | `gpt-6-sol` | `xhigh` |
-| Researcher、Guardian | `gpt-6-astra` | `medium` |
+| Tester、Researcher | `gpt-6.1-sol` | `high` |
+| Reviewer | `gpt-6.1-sol` | `max` |
+| Guardian | `gpt-6-astra` | `medium` |
 
-Guardian 仅在明确请求额外关卡时启动。需要写入产物的测试走原生 Tester 派遣；持久运行器只接受只读 Tester 节点。模型或配置不符时停止派遣，不会自动替换角色。
+Conductor 是每次调用的独立启动阶段；验证成功并完成 Reviewer 审查后，每个任务自动运行一次隔离的 Guardian 最终门禁。需要写入产物的测试走原生 Tester 派遣；持久运行器只接受只读 Tester 节点。模型或配置不符时停止派遣，不会自动替换角色。
 
-把本仓库 `.agents/skills/codex-native-orchestrator/roles/*.toml` 的六个配置放入个人 `CODEX_HOME/agents`，并将清单中的 `config_values` 合并到个人 `CODEX_HOME/config.toml`。这些值仅配置子代理，不包含全局 `model` 或 `model_reasoning_effort`。不要覆盖配置文件中的其他设置或追加重复的 TOML 键。从本仓库检出目录运行检查命令；已运行的会话和 agent 不会自动切换模型。
+把本仓库 `.agents/skills/codex-native-orchestrator/roles/*.toml` 的七个配置放入个人 `CODEX_HOME/agents`，并将清单中的 `config_values` 合并到个人 `CODEX_HOME/config.toml`。这些值仅配置子代理，不包含全局 `model` 或 `model_reasoning_effort`。不要覆盖配置文件中的其他设置或追加重复的 TOML 键。从本仓库检出目录运行检查命令；已运行的会话和 agent 不会自动切换模型。
 
 ```sh
 python3 .agents/skills/codex-native-orchestrator/scripts/codex_native_orchestrator.py --repo "$PWD" doctor
 ```
+
+Native 的独立 Codex CLI 会沿用显式代理环境变量；在 macOS 上，缺少这些变量时自动读取已启用的系统 HTTP/HTTPS 代理。输出留档和超时、中断清理详见[恢复说明](.agents/skills/codex-native-orchestrator/references/runner-and-recovery.md)。
 
 ### 公开仓库与验证范围
 
@@ -93,17 +97,21 @@ Python 3.11 or newer is recommended; External preflight and tests require at lea
 
 | Role | Model | Reasoning effort |
 | --- | --- | --- |
+| Conductor | `gpt-6.1-sol` | `max` |
 | Explorer, Worker | `gpt-6-luna` | `max` |
-| Tester, Reviewer | `gpt-6-sol` | `xhigh` |
-| Researcher, Guardian | `gpt-6-astra` | `medium` |
+| Tester, Researcher | `gpt-6.1-sol` | `high` |
+| Reviewer | `gpt-6.1-sol` | `max` |
+| Guardian | `gpt-6-astra` | `medium` |
 
-Guardian runs only when an extra gate is explicitly requested. Tests that write output use native Tester dispatch; persistent runner Tester nodes must be read-only. Configuration drift stops dispatch instead of substituting a role.
+Conductor is the independent startup phase for every invocation. After successful verification and Reviewer review, every task automatically runs one isolated Guardian final gate. Tests that write output use native Tester dispatch; persistent runner Tester nodes must be read-only. Configuration drift stops dispatch instead of substituting a role.
 
-Place the six `.agents/skills/codex-native-orchestrator/roles/*.toml` profiles in your personal `CODEX_HOME/agents`, and merge the manifest's `config_values` into your personal `CODEX_HOME/config.toml`. These values configure subagents only; they do not include the global `model` or `model_reasoning_effort`. Preserve unrelated settings and avoid duplicate TOML keys. Run the check from this repository checkout. Running sessions and agents do not switch models automatically.
+Place the seven `.agents/skills/codex-native-orchestrator/roles/*.toml` profiles in your personal `CODEX_HOME/agents`, and merge the manifest's `config_values` into your personal `CODEX_HOME/config.toml`. These values configure subagents only; they do not include the global `model` or `model_reasoning_effort`. Preserve unrelated settings and avoid duplicate TOML keys. Run the check from this repository checkout. Running sessions and agents do not switch models automatically.
 
 ```sh
 python3 .agents/skills/codex-native-orchestrator/scripts/codex_native_orchestrator.py --repo "$PWD" doctor
 ```
+
+The independent Native Codex CLI honors explicit proxy environment settings. On macOS, enabled system HTTP/HTTPS proxies fill absent proxy settings. See the [recovery guide](.agents/skills/codex-native-orchestrator/references/runner-and-recovery.md) for private transcripts and timeout/interruption cleanup.
 
 ### Public repository and verification limits
 

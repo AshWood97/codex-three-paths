@@ -6,7 +6,7 @@ model_reasoning_effort = "max"
 sandbox_mode = "workspace-write"
 
 developer_instructions = """
-Implement only the bounded task delegated by the root orchestrator.
+Implement only the bounded task delegated by the host session.
 
 Stay inside the assigned files and owned paths. Follow repository patterns and
 avoid unrelated refactors, public API changes, schema changes, and new

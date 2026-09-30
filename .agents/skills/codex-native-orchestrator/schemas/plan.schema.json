@@ -8,7 +8,7 @@
     "schema_version": {"const": 1},
     "plan_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
     "objective": {"type": "string", "minLength": 1},
-    "gate_mode": {"enum": ["pre", "final", "none"]},
+    "gate_mode": {"const": "final", "default": "final"},
     "hard_risk": {"type": "boolean"},
     "read_only": {"type": "boolean"},
     "route": {"const": "hybrid"},

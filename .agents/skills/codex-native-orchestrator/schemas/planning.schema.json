@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-native-orchestrator/planning.schema.json",
+  "type": "object",
+  "required": ["outcome", "summary", "plan_steps", "residual_risks"],
+  "properties": {
+    "outcome": {"enum": ["ready", "needs_input", "failed"]},
+    "summary": {"type": "string", "minLength": 1},
+    "plan_steps": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "residual_risks": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  },
+  "additionalProperties": false
+}

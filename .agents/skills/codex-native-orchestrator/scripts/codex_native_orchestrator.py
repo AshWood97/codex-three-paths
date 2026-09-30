@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -39,24 +40,27 @@ DEFAULT_CODEX_HOME = Path.home() / ".codex"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DEPLOYMENT_ID_RE = re.compile(r"^deployment-[0-9a-f]{16}$")
-ROLE_NAMES = {"explorer", "worker", "tester", "researcher", "reviewer", "guardian"}
+ROLE_NAMES = {"conductor", "explorer", "worker", "tester", "researcher", "reviewer", "guardian"}
 TASK_ROLE_NAMES = ROLE_NAMES
-RUNNER_TASK_ROLE_NAMES = TASK_ROLE_NAMES - {"guardian"}
-READ_ONLY_ROLES = {"explorer", "researcher", "reviewer", "guardian"}
+RUNNER_TASK_ROLE_NAMES = TASK_ROLE_NAMES - {"conductor", "guardian"}
+READ_ONLY_ROLES = {"conductor", "explorer", "researcher", "reviewer", "guardian"}
 WRITER_ROLES = {"worker", "tester"}
 GATE_MODES = {"none", "pre", "final"}
 MAX_CONCURRENCY = 4
 
 DEFAULT_ROLE_SPECS: Dict[str, Dict[str, Any]] = {
+    "conductor": {"model": "gpt-6.1-sol", "reasoning_effort": "max", "read_only": True},
     "explorer": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": True},
     "worker": {"model": "gpt-6-luna", "reasoning_effort": "max", "read_only": False},
-    "tester": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": False},
-    "researcher": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": True},
-    "reviewer": {"model": "gpt-6-sol", "reasoning_effort": "xhigh", "read_only": True},
+    "tester": {"model": "gpt-6.1-sol", "reasoning_effort": "high", "read_only": False},
+    "researcher": {"model": "gpt-6.1-sol", "reasoning_effort": "high", "read_only": True},
+    "reviewer": {"model": "gpt-6.1-sol", "reasoning_effort": "max", "read_only": True},
     "guardian": {"model": "gpt-6-astra", "reasoning_effort": "medium", "read_only": True},
 }
 
 EVENT_TYPES = {
+    "conductor_started",
+    "conductor_completed",
     "run_created",
     "run_resumed",
     "run_cancelled",
@@ -320,6 +324,12 @@ def _normalize_manifest(
             ("sandbox_mode", sandbox),
         )):
             raise ValidationError("manifest role %s differs from the fixed topology" % name)
+    if roles["guardian"].get("automatic") is not True or roles["guardian"].get("requires_explicit_request") is not False:
+        raise ValidationError("manifest Guardian must be an automatic final gate")
+    if roles["conductor"].get("automatic") is not True or roles["conductor"].get("requires_explicit_request") is not False:
+        raise ValidationError("manifest Conductor must be an automatic planning stage")
+    if not isinstance(raw.get("runner_defaults"), Mapping) or raw["runner_defaults"].get("gate_mode") != "final":
+        raise ValidationError("manifest default gate_mode must be final")
     max_concurrency = raw.get("max_concurrency", raw.get("max_concurrent_threads", 4))
     if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool) or max_concurrency < 1 or max_concurrency > MAX_CONCURRENCY:
         raise ValidationError("manifest max_concurrency must be an integer from 1 to %d" % MAX_CONCURRENCY)
@@ -377,16 +387,14 @@ def normalize_plan(plan: Mapping[str, Any], manifest: Optional[Mapping[str, Any]
     objective = plan.get("objective", plan.get("prompt", plan.get("description")))
     if not isinstance(objective, str) or not objective.strip():
         raise ValidationError("plan objective must be a non-empty string")
-    gate_mode = plan.get("gate_mode", "none")
-    if gate_mode not in GATE_MODES:
-        raise ValidationError("gate_mode must be exactly one of: pre, final, none")
+    gate_mode = plan.get("gate_mode", "final")
+    if gate_mode != "final":
+        raise ValidationError("gate_mode must be final; every task requires the automatic final Guardian gate")
     hard_risk = plan.get("hard_risk", False)
     if not isinstance(hard_risk, bool):
         raise ValidationError("hard_risk must be a boolean")
-    # Risk classification and guardian authorization are independent.  A plan
-    # may be hard-risk while still using gate_mode=none when the user did not
-    # explicitly request the optional guardian gate.  The hard-risk flag still
-    # controls the fail-closed behavior when a gate is actually selected.
+    # Risk classification does not change the mandatory final gate.  The flag
+    # still controls fail-closed recovery after a substantive post-gate change.
     hard_risk_reasons = plan.get("hard_risk_reasons", [])
     if isinstance(hard_risk_reasons, str):
         hard_risk_reasons = [hard_risk_reasons]
@@ -414,7 +422,7 @@ def normalize_plan(plan: Mapping[str, Any], manifest: Optional[Mapping[str, Any]
         role = raw.get("role", "worker")
         if role not in RUNNER_TASK_ROLE_NAMES:
             if role == "root":
-                raise ValidationError("root is the controller and cannot be a plan task")
+                raise ValidationError("root is a legacy name for the host session; Conductor planning is controller-managed")
             if role == "guardian":
                 raise ValidationError("guardian is reserved for the plan gate; use gate_mode")
             raise ValidationError("task %s has unknown role %r" % (task_id, role))
@@ -1252,6 +1260,99 @@ def _extract_text(value: Any) -> str:
     return ""
 
 
+def _attach_evidence_paths(error: BaseException, paths: Mapping[str, str]) -> BaseException:
+    """Attach private transcript locations without copying transcript contents."""
+    setattr(error, "evidence_paths", dict(paths))
+    return error
+
+
+def _invocation_evidence_directory() -> Path:
+    root = resolve_codex_home() / "astra-orchestrator" / "invocations"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if root.is_symlink():
+        raise ControllerError("Codex invocation evidence directory must not be a symlink")
+    os.chmod(str(root), 0o700)
+    return root
+
+
+def _system_proxy_values(output: str) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for line in output.splitlines():
+        match = re.match(r"^\s*(HTTPEnable|HTTPProxy|HTTPPort|HTTPSEnable|HTTPSProxy|HTTPSPort)\s*:\s*(.*?)\s*$", line)
+        if match:
+            values[match.group(1)] = match.group(2)
+    return values
+
+
+def _proxy_url(host: str, port: str) -> Optional[str]:
+    if not host or any(char.isspace() or char in "/@?#" for char in host):
+        return None
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        return None
+    rendered_host = host
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        rendered_host = "[%s]" % host
+    return "http://%s:%d" % (rendered_host, int(port))
+
+
+def codex_child_environment(environment: Mapping[str, str], platform: Optional[str] = None) -> Dict[str, str]:
+    """Copy env and fill absent HTTP(S) proxy pairs from enabled macOS settings."""
+    child = dict(environment)
+    if (platform or sys.platform) != "darwin":
+        return child
+    if "all_proxy" in child or "ALL_PROXY" in child:
+        return child
+    missing = []
+    for scheme in ("http", "https"):
+        names = (scheme + "_proxy", scheme.upper() + "_PROXY")
+        if not any(name in child for name in names):
+            missing.append(scheme)
+    if not missing:
+        return child
+    try:
+        completed = subprocess.run(
+            ["/usr/sbin/scutil", "--proxy"], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return child
+    if completed.returncode != 0:
+        return child
+    values = _system_proxy_values(completed.stdout or "")
+    settings = {
+        "http": ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+        "https": ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+    }
+    for scheme in missing:
+        enabled, host_key, port_key = settings[scheme]
+        if values.get(enabled) not in {"1", "true", "TRUE"}:
+            continue
+        proxy = _proxy_url(values.get(host_key, ""), values.get(port_key, ""))
+        if proxy is None:
+            continue
+        child[scheme + "_proxy"] = proxy
+        child[scheme.upper() + "_PROXY"] = proxy
+    return child
+
+
+def _stop_process_group(process: subprocess.Popen) -> None:
+    """Terminate a timed-out CLI and any descendants it started."""
+    if os.name == "posix":
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGTERM)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1)
+        # The parent may exit on SIGTERM while a child keeps the evidence files
+        # open, so signal the process group again even when wait() completed.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+    else:
+        with contextlib.suppress(OSError):
+            process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=2)
+
+
 def parse_codex_events(stdout: str) -> Dict[str, Any]:
     events: List[Dict[str, Any]] = []
     final: Any = None
@@ -1301,7 +1402,17 @@ def parse_codex_events(stdout: str) -> Dict[str, Any]:
             final = event.get("text", event.get("content", event))
     if not events:
         raise UnknownCodexEventError("Codex emitted no JSON events")
-    failed = next((event for event in reversed(events) if event["type"] in {"error", "turn.failed", "response.failed", "turn.cancelled"}), None)
+    terminal_failures = [event for event in events if event["type"] in {"turn.failed", "response.failed", "turn.cancelled"}]
+    transient_errors = [index for index, event in enumerate(events) if event["type"] == "error"]
+    successful_terminals = [index for index, event in enumerate(events) if event["type"] in {"turn.completed", "response.completed", "result"}]
+    # Explicit terminal failures always win. A top-level error is recoverable
+    # only when a later successful terminal event closes the turn; assistant
+    # text alone is never sufficient evidence of success.
+    failed = terminal_failures[-1] if terminal_failures else None
+    if failed is None and transient_errors:
+        last_error = transient_errors[-1]
+        if not any(index > last_error for index in successful_terminals):
+            failed = events[last_error]
     if final is None:
         final = _extract_text(events[-1])
     if usage["total_tokens"] == 0:
@@ -1390,29 +1501,124 @@ class CodexRunner:
                     atomic_write_bytes(temporary_home / "auth.json", source_auth.read_bytes(), mode=0o600)
                     auth_material_copied = True
                 environment["CODEX_HOME"] = str(temporary_home)
+            environment = codex_child_environment(environment)
+            invocation_id = uuid.uuid4().hex
+            evidence_directory = _invocation_evidence_directory() / invocation_id
+            evidence_directory.mkdir(mode=0o700)
+            os.chmod(str(evidence_directory), 0o700)
+            stdout_path = evidence_directory / "stdout.jsonl"
+            stderr_path = evidence_directory / "stderr.log"
+            evidence_paths = {"stdout": str(stdout_path), "stderr": str(stderr_path)}
+            started = time.monotonic()
+            timed_out = False
+            process_group_cleaned = False
+            returncode: Optional[int] = None
+            process: Optional[subprocess.Popen] = None
+            sys.stderr.write("Codex invocation started (role=%s, id=%s, evidence=%s)\n" % (role, invocation_id, evidence_directory))
+            sys.stderr.flush()
             try:
-                completed = subprocess.run(
-                    command,
-                    cwd=str(effective_cwd),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=timeout,
-                    env=environment,
-                )
-            except subprocess.TimeoutExpired as exc:
-                error = "Codex invocation timed out"
-                if read_only:
-                    raise ControllerError(error) from exc
-                raise WriterUncertainty(error) from exc
+                stdout_fd = os.open(str(stdout_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.chmod(str(stdout_path), 0o600)
+                try:
+                    stderr_fd = os.open(str(stderr_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    os.chmod(str(stderr_path), 0o600)
+                except OSError:
+                    os.close(stdout_fd)
+                    raise
+                with os.fdopen(stdout_fd, "wb") as stdout_file, os.fdopen(stderr_fd, "wb") as stderr_file:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=str(effective_cwd),
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        env=environment,
+                        start_new_session=(os.name == "posix"),
+                    )
+                    try:
+                        while True:
+                            elapsed = time.monotonic() - started
+                            wait_for = 30.0 if timeout is None else min(30.0, max(0.0, timeout - elapsed))
+                            if timeout is not None and wait_for <= 0:
+                                timed_out = True
+                                _stop_process_group(process)
+                                process_group_cleaned = True
+                                break
+                            try:
+                                returncode = process.wait(timeout=wait_for)
+                                break
+                            except subprocess.TimeoutExpired:
+                                elapsed = time.monotonic() - started
+                                if timeout is not None and elapsed >= timeout:
+                                    timed_out = True
+                                    _stop_process_group(process)
+                                    process_group_cleaned = True
+                                    break
+                                stdout_size = stdout_path.stat().st_size if stdout_path.exists() else 0
+                                stderr_size = stderr_path.stat().st_size if stderr_path.exists() else 0
+                                sys.stderr.write("Codex invocation running (role=%s, id=%s, elapsed=%.0fs, stdout_bytes=%d, stderr_bytes=%d)\n" % (role, invocation_id, elapsed, stdout_size, stderr_size))
+                                sys.stderr.flush()
+                    except BaseException:
+                        # start_new_session isolates the CLI for timeout cleanup;
+                        # every other interruption must clean the same process
+                        # group before the secure log handles are closed.
+                        with contextlib.suppress(BaseException):
+                            _stop_process_group(process)
+                        process_group_cleaned = True
+                        raise
+                    finally:
+                        stdout_file.flush()
+                        stderr_file.flush()
+                        os.fsync(stdout_file.fileno())
+                        os.fsync(stderr_file.fileno())
             except OSError as exc:
-                error = "Codex invocation could not start: %s" % exc
+                if process is not None:
+                    if not process_group_cleaned:
+                        with contextlib.suppress(BaseException):
+                            _stop_process_group(process)
+                    error = "Codex invocation failed during process handling: %s" % exc
+                else:
+                    error = "Codex invocation could not start: %s" % exc
+                error_object: ControllerError
                 if read_only:
-                    raise ControllerError(error) from exc
-                raise WriterUncertainty(error) from exc
-        parsed = parse_codex_events(completed.stdout)
-        parsed["returncode"] = completed.returncode
-        parsed["stderr"] = completed.stderr
+                    error_object = ControllerError(error)
+                else:
+                    error_object = WriterUncertainty(error)
+                raise _attach_evidence_paths(error_object, evidence_paths) from exc
+            except BaseException as exc:
+                if process is not None and not process_group_cleaned:
+                    with contextlib.suppress(BaseException):
+                        _stop_process_group(process)
+                elapsed = time.monotonic() - started
+                sys.stderr.write("Codex invocation interrupted (role=%s, id=%s, elapsed=%.1fs)\n" % (role, invocation_id, elapsed))
+                sys.stderr.flush()
+                _attach_evidence_paths(exc, evidence_paths)
+                raise
+            try:
+                stdout_bytes = stdout_path.read_bytes()
+                stderr_bytes = stderr_path.read_bytes()
+            except OSError as exc:
+                error_object = ControllerError("Codex invocation evidence could not be read")
+                raise _attach_evidence_paths(error_object, evidence_paths) from exc
+            stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+            elapsed = time.monotonic() - started
+            if timed_out:
+                sys.stderr.write("Codex invocation timed out (role=%s, id=%s, elapsed=%.1fs)\n" % (role, invocation_id, elapsed))
+                sys.stderr.flush()
+                error_object = ControllerError("Codex invocation timed out") if read_only else WriterUncertainty("Codex invocation timed out")
+                raise _attach_evidence_paths(error_object, evidence_paths)
+            sys.stderr.write("Codex invocation finished (role=%s, id=%s, exit=%s, elapsed=%.1fs)\n" % (role, invocation_id, returncode, elapsed))
+            sys.stderr.flush()
+        try:
+            parsed = parse_codex_events(stdout_text)
+        except UnknownCodexEventError as exc:
+            _attach_evidence_paths(exc, evidence_paths)
+            raise
+        parsed["returncode"] = returncode
+        parsed["stderr"] = stderr_text
+        parsed["evidence_paths"] = evidence_paths
+        parsed["invocation_id"] = invocation_id
         parsed["requested_runtime"] = {
             "model": str(spec["model"]),
             "reasoning_effort": str(spec["reasoning_effort"]),
@@ -1430,12 +1636,12 @@ class CodexRunner:
         if parsed.get("failed_event") is not None:
             message = _extract_text(parsed["failed_event"]) or "Codex returned a terminal failure event"
             if read_only:
-                raise ControllerError(message)
-            raise WriterUncertainty(message)
-        if completed.returncode != 0 and parsed.get("failed_event") is None:
+                raise _attach_evidence_paths(ControllerError(message), evidence_paths)
+            raise _attach_evidence_paths(WriterUncertainty(message), evidence_paths)
+        if returncode != 0 and parsed.get("failed_event") is None:
             if read_only:
-                raise ControllerError("Codex exited with status %s" % completed.returncode)
-            raise WriterUncertainty("Codex exited with status %s" % completed.returncode)
+                raise _attach_evidence_paths(ControllerError("Codex exited with status %s" % returncode), evidence_paths)
+            raise _attach_evidence_paths(WriterUncertainty("Codex exited with status %s" % returncode), evidence_paths)
         return parsed
 
     def invoke(self, prompt: str, role: str, read_only: bool, cwd: Path, output_schema: Optional[Path] = None, timeout: Optional[float] = None, max_attempts: Optional[int] = None) -> Dict[str, Any]:
@@ -1457,16 +1663,28 @@ class CodexRunner:
         if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 1 or attempts > ceiling:
             raise ValidationError("runner max_attempts must be from 1 to %d" % ceiling)
         errors: List[str] = []
+        attempt_evidence_paths: List[Dict[str, str]] = []
         for attempt in range(attempts):
             try:
                 result = self._call(prompt, role, read_only, cwd, schema, timeout)
             except (ControllerError, UnknownCodexEventError, WriterUncertainty, OSError, subprocess.SubprocessError) as exc:
                 errors.append(str(exc))
+                evidence_paths = getattr(exc, "evidence_paths", None)
+                if isinstance(evidence_paths, Mapping):
+                    attempt_evidence_paths.append(dict(evidence_paths))
                 if not read_only:
-                    raise WriterUncertainty("writer result is uncertain; duplicate launch is prohibited: %s" % exc) from exc
+                    wrapped = WriterUncertainty("writer result is uncertain; duplicate launch is prohibited: %s" % exc)
+                    if attempt_evidence_paths:
+                        setattr(wrapped, "evidence_paths", dict(attempt_evidence_paths[-1]))
+                        setattr(wrapped, "attempt_evidence_paths", list(attempt_evidence_paths))
+                    raise wrapped from exc
                 if attempt + 1 >= attempts:
                     qualifier = " after one retry" if attempts == 2 else ""
-                    raise ControllerError("read-only Codex invocation failed%s: %s" % (qualifier, errors[-1])) from exc
+                    wrapped = ControllerError("read-only Codex invocation failed%s: %s" % (qualifier, errors[-1]))
+                    if attempt_evidence_paths:
+                        setattr(wrapped, "evidence_paths", dict(attempt_evidence_paths[-1]))
+                        setattr(wrapped, "attempt_evidence_paths", list(attempt_evidence_paths))
+                    raise wrapped from exc
                 continue
             expected_runtime = {
                 "model": requested_spec["model"],
@@ -1485,6 +1703,8 @@ class CodexRunner:
                             raise WriterUncertainty(error)
                         raise ValidationError(error)
             result.setdefault("attempts", attempt + 1)
+            if attempt_evidence_paths:
+                result["attempt_evidence_paths"] = list(attempt_evidence_paths) + ([dict(result["evidence_paths"])] if isinstance(result.get("evidence_paths"), Mapping) else [])
             return result
         raise ControllerError("Codex invocation failed: %s" % "; ".join(errors))
 
@@ -1594,6 +1814,7 @@ def build_gate_packet(plan: Mapping[str, Any], state: Mapping[str, Any], mode: O
         raise ValidationError("guardian packet mode must be pre or final")
     packet = {
         "Mode": selected_mode,
+        "Role instructions": "Act as the delegated Guardian for this user task. Review only this packet and return the required verdict sections. Do not edit, delegate, or invoke another review or gate; this is the task's single final gate.",
         "Decision": plan.get("objective", ""),
         "Risk classification": {"hard_risk": bool(plan.get("hard_risk")), "hard_risk_reasons": plan.get("hard_risk_reasons", [])},
         "Key invariants": [
@@ -1644,6 +1865,13 @@ def build_gate_packet(plan: Mapping[str, Any], state: Mapping[str, Any], mode: O
             else state.get("test_evidence", "not applicable")
         )
         packet["Reviewer result"] = state.get("review") or "not applicable"
+        packet["Task results"] = {
+            task_id: {"state": task_state.get("state"), "result": task_state.get("result_summary")}
+            for task_id, task_state in state.get("tasks", {}).items()
+        }
+        if state.get("repo", {}).get("native_completion"):
+            packet["Native repository evidence"] = {"baseline": state["repo"], "final": state.get("native_final_snapshot")}
+            packet["Completed native result"] = state.get("native_result")
     return packet
 
 
@@ -1682,9 +1910,13 @@ def validate_guardian_runtime(result: Mapping[str, Any]) -> None:
 
 
 def run_guardian(store: RunStore, state: Dict[str, Any], plan: Mapping[str, Any], repo: Path, runner: CodexRunner, waiver: Optional[str] = None, mode: Optional[str] = None) -> Dict[str, Any]:
-    selected_mode = mode or str(plan.get("gate_mode", "none"))
-    if selected_mode not in {"pre", "final"}:
-        raise ValidationError("guardian may run only for pre or final mode")
+    selected_mode = mode or str(plan.get("gate_mode", "final"))
+    if selected_mode != "final":
+        raise ValidationError("Guardian may run only as the automatic final gate")
+    if (state.get("review") or {}).get("verdict") != "approve":
+        raise ValidationError("final Guardian gate requires a successful Reviewer pass first")
+    if any((state.get("tasks", {}).get(task["task_id"]) or {}).get("state") != "succeeded" for task in plan.get("tasks", [])):
+        raise ValidationError("final Guardian gate requires all task results to succeed first")
     run_path = store.run_path(state["run_id"])
     journal = EventJournal(run_path / "events.jsonl", state["run_id"])
     existing = state.get("gate")
@@ -1767,6 +1999,9 @@ def run_guardian(store: RunStore, state: Dict[str, Any], plan: Mapping[str, Any]
                 "residual_risks": parsed["residual_risks"],
                 "observed_runtime": result.get("observed_runtime", gate["observed_runtime"]),
             })
+            for field in ("evidence_paths", "attempt_evidence_paths", "invocation_id"):
+                if field in result:
+                    gate[field] = result[field]
             state["gate"] = gate
             store.save_state(state["run_id"], state)
             atomic_write_json(run_path / "results" / "guardian.json", {"gate": gate, "packet_hash": packet_hash}, mode=0o600)
@@ -1775,6 +2010,10 @@ def run_guardian(store: RunStore, state: Dict[str, Any], plan: Mapping[str, Any]
         except (ControllerError, ValueError, OSError, subprocess.SubprocessError) as exc:
             gate["retry_count"] = min(invocation_index, 1)
             gate["last_error"] = str(exc)
+            for field in ("evidence_paths", "attempt_evidence_paths"):
+                value = getattr(exc, field, None)
+                if value is not None:
+                    gate[field] = value
             state["gate"] = gate
             store.save_state(state["run_id"], state)
             if invocation_index == 1:
@@ -1821,6 +2060,7 @@ def _task_input_packet(plan: Mapping[str, Any], state: Mapping[str, Any], task: 
         "manifest_hash": state["manifest_hash"],
         "tool_versions": state.get("tool_versions", {}),
         "dependency_hash": dependency_hash,
+        "conductor_plan": (state.get("conductor") or {}).get("result"),
         "dependency_evidence": {
             dependency: (state["tasks"][dependency].get("evidence") or {}).get("hash")
             for dependency in task.get("depends_on", [])
@@ -1979,6 +2219,233 @@ class Orchestrator:
         plan = read_json(Path(plan_path).resolve())
         return validate_plan(plan, manifest=self.manifest)
 
+    def _conductor_ready(self, state: Mapping[str, Any]) -> bool:
+        record = state.get("conductor") or {}
+        packet_path = self.store.run_path(state["run_id"]) / "inputs" / "conductor.json"
+        return (record.get("status") == "ready"
+                and record.get("plan_hash") == state["plan_hash"]
+                and record.get("manifest_hash") == state["manifest_hash"]
+                and packet_path.is_file()
+                and sha256_json(read_json(packet_path)) == record.get("packet_hash"))
+
+    def _ensure_conductor(self, state: Dict[str, Any], plan: Mapping[str, Any]) -> bool:
+        """Run independent planning before work; never compare the host model."""
+        if self._conductor_ready(state):
+            return True
+        packet = {
+            "role": "conductor", "run_id": state["run_id"],
+            "mode": "native" if state["repo"].get("native_completion") else "runner",
+            "objective": plan["objective"], "baseline": state["repo"],
+            "tasks": plan["tasks"],
+            "instructions": [
+                "Act as the delegated Conductor, independent of the host session model.",
+                "Plan architecture, task decomposition, role scheduling, integration, verification and delivery within the supplied objective.",
+                "For a runner plan, ready means the supplied tasks are sufficient. If mandatory work is missing, return needs_input; plan_steps cannot silently change the execution DAG. For native work, give the host concrete implementation and verification steps.",
+                "Do not edit files, delegate, invoke this skill recursively, or perform final review.",
+                "Do not expand scope or alter permissions. Final verification is followed by Reviewer and then Guardian.",
+                "Return ready with concrete plan_steps, or needs_input/failed when planning cannot proceed.",
+            ],
+        }
+        record = {"status": "running", "packet_hash": sha256_json(packet),
+                  "plan_hash": state["plan_hash"], "manifest_hash": state["manifest_hash"],
+                  "requested_runtime": {"model": "gpt-6.1-sol", "reasoning_effort": "max", "sandbox_mode": "read-only"}}
+        atomic_write_json(self.store.run_path(state["run_id"]) / "inputs" / "conductor.json", packet, mode=0o600)
+        state["conductor"] = record
+        if state["state"] in {"needs_input", "failed"}:
+            transition_run(self.store, state, "running", "run_resumed", {"reason": "Conductor planning started or retried"})
+        elif state["state"] == "planned":
+            state["state"] = "running"
+            state["status"] = "running"
+            state["error"] = None
+            state["updated_at"] = utc_now()
+            self.store.save_state(state["run_id"], state)
+        else:
+            state["error"] = None
+            self.store.save_state(state["run_id"], state)
+        journal = EventJournal(self.store.run_path(state["run_id"]) / "events.jsonl", state["run_id"])
+        journal.append("conductor_started", {"packet_hash": record["packet_hash"]})
+        try:
+            response = self.runner.invoke(
+                prompt=canonical_json(packet).decode("utf-8"), role="conductor", read_only=True,
+                cwd=self.repo, output_schema=SCHEMA_DIR / "planning.schema.json",
+                timeout=float(self.manifest["timeouts"]["read_only"]), max_attempts=1,
+            )
+            _merge_usage(state, response)
+            result = _decode_structured_final(response.get("final", response))
+            if not isinstance(result, dict) or set(result) != {"outcome", "summary", "plan_steps", "residual_risks"}:
+                raise ValidationError("Conductor returned an invalid planning result")
+            if not isinstance(result["outcome"], str) or result["outcome"] not in {"ready", "needs_input", "failed"} or not isinstance(result["summary"], str) or not result["summary"].strip():
+                raise ValidationError("Conductor returned an invalid planning outcome")
+            for field in ("plan_steps", "residual_risks"):
+                if not isinstance(result[field], list) or any(not isinstance(item, str) or not item.strip() for item in result[field]):
+                    raise ValidationError("Conductor returned invalid %s" % field)
+            if result["outcome"] == "ready" and not result["plan_steps"]:
+                raise ValidationError("Conductor ready result requires concrete planning steps")
+            record.update(status=result["outcome"], result=result,
+                          observed_runtime=response.get("observed_runtime") or {},
+                          output_hash=response.get("output_hash", sha256_json(response)))
+            for field in ("evidence_paths", "attempt_evidence_paths", "invocation_id"):
+                if field in response:
+                    record[field] = response[field]
+        except (ControllerError, OSError) as exc:
+            record.update(status="unavailable", error=str(exc))
+            for field in ("evidence_paths", "attempt_evidence_paths"):
+                value = getattr(exc, field, None)
+                if value is not None:
+                    record[field] = value
+        self.store.save_state(state["run_id"], state)
+        atomic_write_json(self.store.run_path(state["run_id"]) / "results" / "conductor.json", record, mode=0o600)
+        journal.append("conductor_completed", {
+            "status": record["status"], "packet_hash": record["packet_hash"],
+            "evidence_paths": record.get("evidence_paths"),
+        })
+        if record["status"] != "ready":
+            state["error"] = "Conductor planning did not complete; work has not started"
+            transition_run(self.store, state, "needs_input", "run_needs_input", {"reason": state["error"]})
+            return False
+        return True
+
+    def native_begin(self, run_id: str, objective: str) -> Dict[str, Any]:
+        """Record native task baseline before any work starts."""
+        self._require_installed_topology()
+        snapshot = require_clean_repo(self.repo)
+        plan = validate_plan({
+            "plan_id": run_id, "objective": objective, "read_only": True,
+            "tasks": [{"task_id": "native-review", "role": "reviewer", "objective": "Review completed native work"}],
+        }, self.manifest)
+        snapshot["native_completion"] = True
+        if not self.store.run_path(run_id).exists():
+            self.store.create(plan, snapshot, self.manifest, run_id)
+        with self.store.lock(run_id):
+            state, saved_plan = self.store.load(run_id)
+            if (not state.get("repo", {}).get("native_completion")
+                    or state.get("native_completion_hash") is not None
+                    or state["state"] not in {"planned", "running", "needs_input"}
+                    or any(task.get("state") != "pending" or task.get("attempts", 0) or task.get("launch_released")
+                           for task in state["tasks"].values())):
+                raise ControllerError("native-begin may retry only native planning before work starts")
+            if not self._manifest_matches_run(state) or state["plan_hash"] != sha256_json(plan):
+                raise ControllerError("native planning objective or topology changed; use a new run ID")
+            if state["repo"] != snapshot:
+                raise RepoSafetyError("native baseline changed; planning cannot be retried after work starts")
+            plan = saved_plan
+            ready = self._ensure_conductor(state, plan)
+            if ready:
+                if repo_snapshot(self.repo) != {key: value for key, value in snapshot.items() if key != "native_completion"}:
+                    state["error"] = "native baseline changed during Conductor planning"
+                    state["conductor"]["status"] = "stale"
+                    transition_run(self.store, state, "needs_input", "run_needs_input", {"reason": state["error"]})
+                    raise RepoSafetyError(state["error"])
+                state["error"] = None
+                self.store.save_state(run_id, state)
+                if state["state"] == "needs_input":
+                    transition_run(self.store, state, "running", "run_resumed", {"reason": "native planning completed; host work may start"})
+        return {"ok": ready, "run_id": run_id, "baseline": snapshot, "conductor": state.get("conductor")}
+
+    def _verify_native_final_snapshot(self, state: Dict[str, Any]) -> None:
+        if repo_snapshot(self.repo) != state.get("native_final_snapshot"):
+            state["error"] = "native repository changed during final checks; evidence is stale"
+            self.store.save_state(state["run_id"], state)
+            if state["state"] != "needs_input":
+                transition_run(self.store, state, "needs_input", "run_needs_input", {"reason": state["error"]})
+            raise ControllerError(state["error"])
+
+    def native_gate(self, completion_path: Path, run_id: str, waiver: Optional[str] = None) -> Dict[str, Any]:
+        """Verify native work, run Reviewer, then consume one final Guardian."""
+        completion = read_json(Path(completion_path).resolve())
+        if not isinstance(completion, Mapping) or not isinstance(completion.get("changes"), bool):
+            raise ValidationError("native completion must explicitly declare boolean changes")
+        raw_checks = completion.get("test_evidence", [])
+        if not isinstance(raw_checks, list):
+            raise ValidationError("native test_evidence must be an array")
+        checks = [_validate_test_evidence_item(item) for item in raw_checks]
+        if any(check["exit_code"] != 0 for check in checks):
+            raise ValidationError("native work requires successful concrete verification evidence")
+        self._require_installed_topology()
+        if not self.store.run_path(run_id).is_dir():
+            raise ValidationError("native-begin must record the repository baseline before the task")
+        completion_hash = sha256_json(completion)
+        with self.store.lock(run_id):
+            state, plan = self.store.load(run_id)
+            if not state.get("repo", {}).get("native_completion"):
+                raise ControllerError("run ID belongs to a different task")
+            if not self._manifest_matches_run(state):
+                raise ControllerError("manifest changed; native gate evidence is stale")
+            if not self._conductor_ready(state):
+                raise ControllerError("Conductor planning must complete before native work")
+            if completion.get("objective") != plan["objective"]:
+                raise ValidationError("native completion objective differs from the recorded task")
+            existing_hash = state.get("native_completion_hash")
+            if existing_hash is not None and existing_hash != completion_hash and state.get("gate") is not None:
+                raise ControllerError("native completion changed; the same task cannot silently launch another gate")
+            baseline = state["repo"]
+            snapshot = require_clean_repo(self.repo)
+            for field in ("repo_root", "git_dir", "branch"):
+                if snapshot[field] != baseline[field]:
+                    raise RepoSafetyError("native repository identity changed after baseline recording")
+            base, delivery = baseline["head"], snapshot["head"]
+            diff = _trusted_git_bytes(self.repo, ["diff", "--no-ext-diff", "--no-color", "--binary", base, delivery]).stdout
+            actual_changes = bool(diff) or base != delivery
+            if completion["changes"] != actual_changes:
+                raise ValidationError("native changes declaration differs from the recorded baseline and final snapshot")
+            for field, expected in (("base_head", base), ("delivery_commit", delivery)):
+                if field in completion and completion[field] != expected:
+                    raise ValidationError("native completion %s differs from the verified snapshot" % field)
+            if actual_changes and not checks:
+                raise ValidationError("changed native work requires successful concrete verification evidence")
+            if state.get("gate") is not None and snapshot != state.get("native_final_snapshot"):
+                raise ControllerError("native repository changed after the single final gate; evidence is stale")
+            if existing_hash != completion_hash:
+                integration = None
+                if diff:
+                    diff_path = self.store.run_path(run_id) / "evidence" / "final.diff"
+                    atomic_write_bytes(diff_path, diff, mode=0o600)
+                    integration = {
+                        "path": str(self.repo), "base_head": base, "delivery_commit": delivery,
+                        "tree": _trusted_git(self.repo, ["rev-parse", delivery + "^{tree}"]).stdout.strip(),
+                        "changed_paths": sorted(_git_nul_paths(self.repo, ["diff", "--no-renames", "--name-only", "-z", base, delivery], trusted=True)),
+                        "diff_path": str(diff_path), "diff_hash": sha256_bytes(diff), "writer_commits": [], "verified": True,
+                    }
+                    integration["evidence_hash"] = sha256_json(integration)
+                state.update({
+                    "native_completion_hash": completion_hash, "native_final_snapshot": snapshot,
+                    "native_result": completion.get("result", completion["objective"]),
+                    "integration": integration, "review": None, "error": None,
+                    "test_evidence": {"native-verification": {"test_evidence": checks}} if checks else "not applicable",
+                })
+                state["tasks"]["native-review"].update({"state": "pending", "status": "pending", "result_summary": None})
+                self.store.save_state(run_id, state)
+                if state["state"] != "running":
+                    transition_run(self.store, state, "running", "run_resumed", {"reason": "completed native work awaiting final checks"})
+            if state.get("gate") is None:
+                approved = self._run_final_reviewer_review(state, plan)
+                state["tasks"]["native-review"].update({
+                    "state": "succeeded", "status": "succeeded", "result_summary": state["review"],
+                    "requested_runtime": state["review"]["requested_runtime"],
+                    "observed_runtime": state["review"]["observed_runtime"],
+                })
+                self.store.save_state(run_id, state)
+                if not approved:
+                    state["error"] = "independent native review requires revision"
+                    transition_run(self.store, state, "needs_input", "run_needs_input", {"reason": state["error"]})
+                    return {"ok": False, "run_id": run_id, "state": state["state"], "gate": None, "review": state["review"]}
+                self._verify_native_final_snapshot(state)
+            if waiver is not None:
+                if not isinstance(waiver, str) or not waiver.strip():
+                    raise ValidationError("Guardian waiver must be non-empty")
+                if (state.get("gate") or {}).get("status") not in {"unavailable", "revise", "block"}:
+                    raise ValidationError("native waiver requires an unavailable or non-approving gate result")
+                state["gate"].update({"status": "waived", "waiver": waiver})
+                self.store.save_state(run_id, state)
+            if state["state"] != "completed":
+                gate_approved = self._consume_guardian(state, plan)
+                self._verify_native_final_snapshot(state)
+                if gate_approved:
+                    if state["state"] == "needs_input":
+                        transition_run(self.store, state, "running", "run_resumed", {"reason": "native final gate approved or explicitly waived"})
+                    transition_run(self.store, state, "completed", "run_completed", {"gate_mode": "final", "native_completion": True})
+            return {"ok": state["state"] == "completed", "run_id": run_id, "state": state["state"], "gate": state.get("gate"), "review": state.get("review")}
+
     def run(self, plan_path: Path, run_id: Optional[str] = None, dry_run: bool = False) -> Dict[str, Any]:
         normalized = validate_plan(read_json(Path(plan_path).resolve()), manifest=self.manifest)
         if dry_run:
@@ -2135,6 +2602,9 @@ class Orchestrator:
             "dependency_hash": context["packet"]["dependency_hash"],
             "base_head": context["base_head"],
         }
+        for field in ("evidence_paths", "attempt_evidence_paths", "invocation_id"):
+            if field in result:
+                result_record[field] = result[field]
         if structured["outcome"] != "succeeded":
             return {"record": result_record, "evidence": None, "raw": result}
         if task["writes"]:
@@ -2491,12 +2961,16 @@ class Orchestrator:
         EventJournal(self.store.run_path(state["run_id"]) / "events.jsonl", state["run_id"]).append("integration_finalized", {"delivery_commit": delivery, "evidence_hash": integration["evidence_hash"]})
 
     def _run_final_reviewer_review(self, state: Dict[str, Any], plan: Mapping[str, Any]) -> bool:
-        if not state.get("integration"):
-            return True
+        integration = state.get("integration") or {}
         packet = build_gate_packet(plan, state, mode="final")
         packet.pop("Controller isolation request", None)
-        packet["Review kind"] = "ordinary independent integration review"
-        packet["Integration"] = state["integration"]
+        packet.pop("Reviewer result", None)
+        packet["Role instructions"] = "Act as the delegated Reviewer for this user task. Review the final result and concrete verification evidence, then return the required verdict sections. Do not edit, delegate, or invoke Guardian; the controller runs the final gate after your result.",
+        if state.get("repo", {}).get("native_completion"):
+            packet["Task results"].pop("native-review", None)
+        review_kind = "integration" if integration else "read-only"
+        packet["Review kind"] = "ordinary independent %s review" % review_kind
+        packet["Integration"] = integration or "not applicable"
         packet_hash = sha256_json(packet)
         existing = state.get("review")
         if isinstance(existing, Mapping) and existing.get("packet_hash") == packet_hash:
@@ -2505,30 +2979,32 @@ class Orchestrator:
             prompt=canonical_json(packet).decode("utf-8"),
             role="reviewer",
             read_only=True,
-            cwd=Path(state["integration"]["path"]),
+            cwd=Path(integration.get("path", self.repo)),
             output_schema=SCHEMA_DIR / "gate.schema.json",
             timeout=float(plan.get("reviewer_timeout", 1800)),
             max_attempts=2,
         )
         parsed = parse_gate_response(result)
         review = {
-            "kind": "integration",
+            "kind": review_kind,
             "packet_hash": packet_hash,
             "verdict": parsed["verdict"],
             "important_findings": parsed["important_findings"],
             "required_changes": parsed["required_changes"],
             "residual_risks": parsed["residual_risks"],
-            "integration_evidence_hash": state["integration"]["evidence_hash"],
+            "integration_evidence_hash": integration.get("evidence_hash"),
             "requested_runtime": {"model": DEFAULT_ROLE_SPECS["reviewer"]["model"], "reasoning_effort": DEFAULT_ROLE_SPECS["reviewer"]["reasoning_effort"], "sandbox_mode": "read-only"},
             "observed_runtime": result.get("observed_runtime", {"model": "unknown", "reasoning_effort": "unknown", "sandbox_mode": "unknown"}),
         }
         state["review"] = review
         self.store.save_state(state["run_id"], state)
         atomic_write_json(self.store.run_path(state["run_id"]) / "results" / "sol-review.json", review, mode=0o600)
-        EventJournal(self.store.run_path(state["run_id"]) / "events.jsonl", state["run_id"]).append("review_completed", {"kind": "integration", "packet_hash": packet_hash, "verdict": parsed["verdict"]})
+        EventJournal(self.store.run_path(state["run_id"]) / "events.jsonl", state["run_id"]).append("review_completed", {"kind": review_kind, "packet_hash": packet_hash, "verdict": parsed["verdict"]})
         return parsed["verdict"] == "approve"
 
     def _execute_ready(self, run_id: str, state: Dict[str, Any], plan: Dict[str, Any], manifest: Mapping[str, Any]) -> None:
+        if not self._ensure_conductor(state, plan):
+            return
         tasks = _task_lookup(plan)
         run_path = self.store.run_path(run_id)
         while state["state"] == "running":
@@ -2680,6 +3156,14 @@ class Orchestrator:
                     task_state["error"] = str(exc)
                     uncertain = isinstance(exc, WriterUncertainty) or task["writes"]
                     result_record = {"schema_version": SCHEMA_VERSION, "run_id": run_id, "task_id": task_id, "role": task["role"], "outcome": "needs_input" if uncertain else "failed", "attempts": task_state["attempts"], "error": str(exc)}
+                    evidence_paths = getattr(exc, "evidence_paths", None)
+                    if evidence_paths is not None:
+                        result_record["evidence_paths"] = evidence_paths
+                        task_state["evidence_paths"] = evidence_paths
+                    attempt_paths = getattr(exc, "attempt_evidence_paths", None)
+                    if attempt_paths is not None:
+                        result_record["attempt_evidence_paths"] = attempt_paths
+                        task_state["attempt_evidence_paths"] = attempt_paths
                     atomic_write_json(run_path / "results" / (task_id + ".json"), result_record, mode=0o600)
                     if uncertain:
                         transition_task(self.store, state, task_id, "needs_input", "task_needs_input", {"error": str(exc), "duplicate_launch_prohibited": task["writes"]})
@@ -2750,6 +3234,8 @@ class Orchestrator:
     def resume(self, run_id: str, waiver: Optional[str] = None) -> Dict[str, Any]:
         with self.store.lock(run_id):
             state, plan = self.store.load(run_id)
+            if state.get("repo", {}).get("native_completion") or state.get("native_completion_hash"):
+                raise ControllerError("native runs cannot resume as a DAG; retry planning with native-begin or finish with native-gate and the same completion receipt")
             if state["state"] in {"completed", "applied", "cleaned", "cancelled"}:
                 return {"ok": True, "run_id": run_id, "state": state["state"], "gate": state.get("gate"), "tasks": state["tasks"]}
             manifest_matches = self._manifest_matches_run(state)
@@ -2947,6 +3433,7 @@ class Orchestrator:
             "checks": checks,
             "uncertainties": uncertainties,
             "tasks": state["tasks"],
+            "conductor": state.get("conductor"),
             "gate": state.get("gate"),
             "review": state.get("review"),
             "integration": state.get("integration"),
@@ -2975,6 +3462,8 @@ class Orchestrator:
     def apply(self, run_id: str, waiver: Optional[str] = None) -> Dict[str, Any]:
         with self.store.lock(run_id):
             state, plan = self.store.load(run_id)
+            if state.get("native_completion_hash"):
+                raise ControllerError("native final gate records completed work and cannot apply repository changes")
             if not self._manifest_matches_run(state):
                 raise RepoSafetyError("manifest changed after validation; evidence is stale")
             if waiver:
@@ -4031,7 +4520,7 @@ def doctor(repo: Path, codex_home: Path) -> Dict[str, Any]:
     except ControllerError as exc:
         manifest = {"roles": DEFAULT_ROLE_SPECS, "max_concurrency": 4, "managed_config_keys": []}
         checks["manifest"] = {"ok": False, "error": str(exc)}
-    schema_names = ("plan.schema.json", "state.schema.json", "event.schema.json", "result.schema.json", "gate.schema.json")
+    schema_names = ("plan.schema.json", "state.schema.json", "event.schema.json", "result.schema.json", "gate.schema.json", "planning.schema.json")
     schema_errors = []
     for name in schema_names:
         path = SCHEMA_DIR / name
@@ -4158,6 +4647,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor"); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
     p = sub.add_parser("validate-plan"); p.add_argument("plan"); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
     p = sub.add_parser("run"); p.add_argument("plan"); p.add_argument("--run-id", default=None); p.add_argument("--dry-run", action="store_true"); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
+    p = sub.add_parser("native-gate"); p.add_argument("completion"); p.add_argument("--run-id", required=True); p.add_argument("--waiver", default=None); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
+    p = sub.add_parser("native-begin"); p.add_argument("--run-id", required=True); p.add_argument("--objective", required=True); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
     p = sub.add_parser("status"); p.add_argument("run_id"); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
     p = sub.add_parser("resume"); p.add_argument("run_id"); p.add_argument("--waiver", default=None); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
     p = sub.add_parser("cancel"); p.add_argument("run_id"); p.add_argument("--reason", default="cancelled by user"); p.add_argument("--repo", default=argparse.SUPPRESS); p.add_argument("--codex-home", default=argparse.SUPPRESS)
@@ -4182,6 +4673,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = {"ok": True, "plan": Orchestrator(repo, codex_home).validate(Path(args.plan))}
         elif args.command == "run":
             result = Orchestrator(repo, codex_home).run(Path(args.plan), run_id=args.run_id, dry_run=args.dry_run)
+        elif args.command == "native-gate":
+            result = Orchestrator(repo, codex_home).native_gate(Path(args.completion), args.run_id, waiver=args.waiver)
+        elif args.command == "native-begin":
+            result = Orchestrator(repo, codex_home).native_begin(args.run_id, args.objective)
         elif args.command == "status":
             result = Orchestrator(repo, codex_home).status(args.run_id)
         elif args.command == "resume":

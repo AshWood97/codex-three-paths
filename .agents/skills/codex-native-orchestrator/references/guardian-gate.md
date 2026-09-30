@@ -1,54 +1,82 @@
-# Optional guardian gate
+# Automatic final Guardian gate
 
-The plan records `gate_mode` as exactly `pre`, `final`, or `none` and records
-whether the risk is `hard_risk`. Risk classification is independent from
-guardian authorization: `hard_risk` may be true with `gate_mode=none` when the
-user has not requested an extra gate. The root already performs ordinary
-planning and risk analysis. The default is `none`; the guardian is an explicit
-opt-in compatibility mechanism, not an automatic second opinion.
-The Astra budget is exactly zero or one logical gate per task.
+Every completed task handled by this skill runs one logical Guardian final
+gate after successful verification and the Sol Reviewer pass. This is a fixed
+policy for native and persistent-runner work, including read-only and
+documentation tasks. No separate user request is required. A task means the
+whole user assignment, not each agent or DAG node.
 
-## Classification
+The Conductor is a separate mandatory startup phase that runs once before
+overall planning. Do not start it again as part of this final gate.
 
-If the user explicitly requests a gate, choose `pre` when the task makes or
-changes a decision involving any of:
-
-- authentication or authorization;
-- permissions, privilege, isolation, or another trust boundary;
-- irreversible data or schema migration;
-- a persistent data or storage format;
-- destructive operations;
-- a breaking public API, protocol, or schema change; or
-- financial or regulatory logic.
-
-Choose `final`, only when `pre` does not apply, for any of the following
-explicitly requested checks:
-
-- high-impact concurrency, transaction, recovery, or consistency behavior;
-- cross-service changes with a high blast radius;
-- conflicting conclusions from agents that the root cannot resolve with
-  evidence;
-- a root cause that remains materially uncertain;
-- test failures whose cause remains unexplained; or
-- work the user explicitly marks as release-critical.
-
-Choose `none` for ordinary work and whenever the user has not requested an
-extra gate. In `none`, do not call the guardian. If an explicit request could
-fit both modes, choose `pre`; never schedule both.
-
-When a user explicitly opts into a hard-risk gate, an unavailable or blocking
-gate cannot be silently downgraded. A retry of malformed output is part of the
-same logical gate, not a second gate.
+New plans use `gate_mode=final`; omitted mode defaults to `final`, and `pre`
+or `none` is rejected. `hard_risk` remains an independent risk classification
+for authentication, permissions, irreversible migration, destructive changes,
+public contract changes, and financial or regulatory logic. It does not change
+the required final-gate timing. The Astra budget is one logical gate per task.
 
 ## Timing and invocation
 
-For an explicitly requested `pre`, finish enough read-only exploration to state the decision and
-invariants, then gate before any implementation edit, migration, destructive
-action, or writer. For `final`, complete the implementation and integration
-tests, then complete the Sol reviewer pass before the gate at the last
-meaningful delivery point. `none` has no guardian invocation.
+Complete the work and its relevant checks, then complete a successful GPT-6.1
+Sol Reviewer pass before the automatic final gate at the last meaningful
+delivery point. Reviewer findings must be resolved and affected checks
+refreshed first.
+For read-only tasks, review the completed results and record unnecessary tests
+as `not applicable`. Do not gate before Reviewer or report delivery as complete
+without a valid gate result or an explicit user waiver.
 
-The authoritative gate is an explicit controller-isolated read-only process
+For native tasks, record a clean repository baseline before starting work:
+
+```sh
+python3 scripts/codex_native_orchestrator.py --repo /absolute/path/to/repository \
+  native-begin --run-id TASK_ID --objective 'Task objective'
+```
+
+`native-begin` starts the Conductor automatically; do not also spawn it
+manually for the same task. When work begins outside a repository, start the
+Conductor with native agent tools before planning.
+
+If startup planning fails, retry `native-begin` with the same run ID and
+objective before editing. Recovery requires the unchanged manifest and clean
+recorded baseline; a valid planning result is reused. Native runs never enter
+the ordinary DAG through `resume`. After work, finish with `native-gate` and
+its completion receipt.
+
+If the source is dirty or changes should stay uncommitted, use an isolated
+evidence checkout containing the original state, record its baseline before
+work, then preserve the final content there as an exact commit. This does not
+change the user's repository history. Use that same evidence checkout below.
+
+Record the completed assignment in a JSON receipt, then run:
+
+```sh
+python3 scripts/codex_native_orchestrator.py --repo /absolute/path/to/repository \
+  native-gate /absolute/path/to/completion.json --run-id TASK_ID
+```
+
+The receipt contains the same `objective`, boolean `changes`, the completed
+`result`, and a `test_evidence` array. Each check has exactly
+`command`, `exit_code`, `output_hash`, and `artifact_hashes`; unnecessary checks
+may be an empty array for read-only work. Optional `base_head` and
+`delivery_commit` IDs must match the controller-recorded baseline and current
+clean HEAD. The controller computes the actual canonical diff, tree, and
+changed paths, rejects a false no-change declaration or failed checks, and
+actually invokes Reviewer before Guardian. Receipt claims of Reviewer approval
+cannot replace that invocation. The host session remains the controller, not a
+writer node.
+The controller rechecks the final repository snapshot after Reviewer and after
+Guardian; changes during either check invalidate completion.
+
+Keep the same task ID and byte-equivalent receipt for resume or retry. A changed
+receipt after a gate starts cannot silently consume another gate. Before the
+gate starts, Reviewer findings may be fixed and the same task's evidence
+refreshed against the original baseline. `native-gate` records completed
+work and never applies repository changes. If the gate is unavailable or does
+not approve, only an explicit user waiver may use `--waiver REASON` with the
+same receipt. A direct native `guardian` spawn alone does not establish the
+required controller isolation or durable single-gate accounting.
+
+The authoritative gate is a controller-isolated read-only process
 using a structured output contract. The controller launches the guardian with
 a temporary minimal `CODEX_HOME` dedicated to that invocation. `guardian.toml`
 is advisory compatibility metadata for role discovery and native callers; its
@@ -61,20 +89,23 @@ cannot be observed, the value is `unknown`.
 
 Send only this compact packet:
 
-- `Mode`: `pre` or `final`;
-- `Decision` for `pre`, or for `final` a deterministic final diff bound to the
-  base and delivery commit IDs, stable changed paths, and a canonical diff
-  artifact and hash;
+- `Mode`: `final`;
+- A deterministic final diff bound to base and delivery commit IDs, stable
+  changed paths, and a canonical diff artifact and hash; for read-only work,
+  completed task results and an explicit no-diff statement;
 - `Key invariants`;
 - `Test evidence`, including concrete test commands, exit statuses, and
   output or artifact paths/hashes, together with effective read-only runtime
-  evidence and baseline evidence or `not applicable`; and
+  evidence and baseline evidence or `not applicable`;
+- The successful Reviewer result; and
 - `Residual risks`.
 
-The canonical final diff is the exact, no-color, no-external-diff, binary
-diff for the recorded base and delivery commits. A final packet must carry
-that deterministic diff evidence and concrete test evidence; a summary or a
-requested test plan is not a substitute.
+For tasks with changes, the canonical final diff is the exact, no-color,
+no-external-diff, binary diff for the recorded base and delivery commits.
+The final packet must carry that deterministic diff evidence and concrete
+test evidence; a summary or a requested test plan is not a substitute.
+Read-only tasks instead carry completed task results and record the absent
+repository diff and any unnecessary tests as `not applicable`.
 
 The guardian must remain read-only, must not delegate, and must not expand
 scope. A valid response contains exactly these required sections and a
