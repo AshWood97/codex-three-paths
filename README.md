@@ -107,6 +107,14 @@ Conductor is the independent startup phase for every invocation. After successfu
 
 Place the seven `.agents/skills/codex-native-orchestrator/roles/*.toml` profiles in your personal `CODEX_HOME/agents`, and merge the manifest's `config_values` into your personal `CODEX_HOME/config.toml`. These values configure subagents only; they do not include the global `model` or `model_reasoning_effort`. Preserve unrelated settings and avoid duplicate TOML keys. Run the check from this repository checkout. Running sessions and agents do not switch models automatically.
 
+#### Manual invocation and Ultra entrypoint
+
+Native orchestration keeps `allow_implicit_invocation: false`. Select **Codex Native Orchestration** from the skill/slash menu (`/codex` filters the list), or invoke `$codex-native-orchestrator` with a task, to start it manually. Ordinary and Max task matching do not start the workflow.
+
+For Ultra integration, merge the marked block from [activation instructions](.agents/skills/codex-native-orchestrator/references/activation.md) into your personal `CODEX_HOME/AGENTS.md`, preserving unrelated guidance. Only the latest trusted runtime/developer instruction announcing active proactive delegation authorizes automatic loading for complex repository work. Full access, saved effort defaults, screenshots, and earlier skill use are not signals. Simple Ultra tasks remain in the host session. Global guidance is loaded at session startup; start a new session after installation.
+
+Both entrypoints use the same custom roles and controller flow, with one startup per run. Delegated children do not activate nested orchestration. Existing unfinished tasks resume their recorded run; independent tasks re-evaluate the entrypoints.
+
 ```sh
 python3 .agents/skills/codex-native-orchestrator/scripts/codex_native_orchestrator.py --repo "$PWD" doctor
 ```

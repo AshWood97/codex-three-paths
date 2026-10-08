@@ -1,15 +1,30 @@
 ---
 name: codex-native-orchestrator
-description: Route complex repository work across native Codex models and agents; use the persistent runner for DAG or resumable work.
+description: Route complex repository work across native Codex agents when explicitly invoked or authorized by the current Ultra runtime mode. Never activate from task matching in ordinary or Max mode. Use the persistent runner for DAG or resumable work.
 ---
 
 # Codex Native Orchestration
+
+## Activation: manual invocation or Ultra
+
+Only the primary/host agent may start this workflow. Named-role agents and other delegated children execute their assigned packets without starting another Conductor, runner, or final gate.
+
+A new run requires either of these entrypoints:
+
+- **Manual:** The user selects **Codex Native Orchestration** in the skill/slash menu (typing `/codex` filters that menu), or sends a direct `$codex-native-orchestrator` invocation with a task. Questions, quotations, screenshots, document references, and requests to inspect or edit this skill are not invocations of its orchestration workflow.
+- **Ultra:** The latest trusted runtime/developer `<multi_agent_mode>` instruction states **"Proactive multi-agent delegation is active"**, and the current repository task materially benefits from independent exploration, implementation, testing, research, or review. This is the Ultra runtime bridge; simple questions and small localized changes stay in the host session.
+
+Ordinary/Max task matching, full access, a global default effort, the word `ultra` in user or document text, available agent tools, and earlier skill use do not authorize automatic activation. A later runtime instruction returning to explicit-request-only mode revokes Ultra activation for new tasks. Unknown mode does not authorize automatic activation.
+
+Keep `policy.allow_implicit_invocation: false` in `agents/openai.yaml`. The lightweight [global activation instructions](references/activation.md) conditionally load this file; the skill must not be injected for ordinary task matching.
+
+If both entrypoints apply, start one run through one execution mode. Continue an existing, unfinished run for the same authorized objective through its recorded state and entrypoint, including after leaving Ultra; do not start another Conductor. Completed/cancelled runs and earlier conversation history do not authorize an independent new task. Re-evaluate the entrypoints for every independent new task.
 
 Use this skill for repository tasks where independent exploration, implementation, testing, research, or review materially improves the result. Keep small localized changes in the host session. The role topology below is fixed for this installation; do not substitute a model or effort for any named role.
 
 ## Mandatory Conductor phase
 
-On every skill invocation, parse explicit user controls and choose the tentative execution entrypoint, then start exactly one independent `conductor` phase before detailed planning or decomposition. The Conductor uses its fixed `gpt-6.1-sol` / `max` assignment regardless of the model or effort selected for the current host session. Do not inspect, check, or pin the host session's model or effort against the Conductor. The Conductor independently assesses the tentative plan and returns the overall decomposition, routing, and integration and delivery plan; the host session executes the agreed plan and owns integration and delivery.
+For each newly authorized run, parse explicit user controls and choose the tentative execution entrypoint, then start exactly one independent `conductor` phase before detailed planning or decomposition. The Conductor uses its fixed `gpt-6.1-sol` / `max` assignment regardless of the model or effort selected for the current host session. Do not inspect, check, or pin the host session's model or effort against the Conductor. The Conductor independently assesses the tentative plan and returns the overall decomposition, routing, and integration and delivery plan; the host session executes the agreed plan and owns integration and delivery.
 
 For repository-native work, use the selected entrypoint: `native-begin` or the persistent runner starts this phase automatically. Do not start both modes for one task or manually spawn another Conductor. Resume only through the same mode and its recorded state. For work outside a repository, start the named Conductor with native agent tools before detailed planning. Do not dispatch ordinary work until the Conductor result is available. The `conductor` is a controller-managed startup phase, not an ordinary DAG role; it cannot edit files or delegate.
 
